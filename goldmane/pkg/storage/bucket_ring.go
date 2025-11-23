@@ -228,6 +228,18 @@ func (r *BucketRing) FilterHints(req *proto.FilterHintsRequest) ([]string, *type
 				return p.Name
 			},
 		)
+	case proto.FilterType_FilterTypePolicyKind:
+		valueFunc = extractPolicyFieldsFromFlowKey(
+			func(p *proto.PolicyHit) string {
+				return p.Kind.String()
+			},
+		)
+	case proto.FilterType_FilterTypePolicyNamespace:
+		valueFunc = extractPolicyFieldsFromFlowKey(
+			func(p *proto.PolicyHit) string {
+				return p.Namespace
+			},
+		)
 	default:
 		return nil, nil, fmt.Errorf("unsupported filter type '%s'", req.Type.String())
 	}
