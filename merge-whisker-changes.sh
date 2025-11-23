@@ -21,8 +21,8 @@ function ensure_remote_exists() {
 
 function fetch_all() {
   echo "Fetching branches..."
-  git fetch origin "${COPILOT_BRANCH}:${COPILOT_BRANCH}" --force
-  git fetch "${UI_REMOTE}" "${UI_BRANCH}:${UI_REMOTE}/${UI_BRANCH}" --force
+  git fetch origin "$COPILOT_BRANCH" --force
+  git fetch "$UI_REMOTE" "$UI_BRANCH" --force
 }
 
 function next_version_name() {
@@ -48,10 +48,11 @@ fetch_all
 NEW_BRANCH=$(next_version_name "$COMBINED_PREFIX")
 echo "Creating new branch: $NEW_BRANCH"
 
+echo "Checking out base branch: $BASE_BRANCH"
 git checkout -B "$NEW_BRANCH" "$BASE_BRANCH"
 
 echo "Merging Copilot backend branch (preferring theirs)..."
-git merge --no-ff "$COPILOT_BRANCH" -X theirs -m "Merge Copilot backend branch: $COPILOT_BRANCH" || {
+git merge --no-ff "origin/$COPILOT_BRANCH" -X theirs -m "Merge Copilot backend branch: $COPILOT_BRANCH" || {
   echo "⚠️ Merge conflicts detected (Copilot). Please resolve manually."
   exit 1
 }
