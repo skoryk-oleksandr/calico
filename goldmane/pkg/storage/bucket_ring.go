@@ -222,7 +222,7 @@ func (r *BucketRing) FilterHints(req *proto.FilterHintsRequest) ([]string, *type
 				return p.Tier
 			},
 		)
-	case proto.FilterType_FilterTypePolicyName:
+	case proto.FilterType_FilterTypePolicy:
 		valueFunc = extractPolicyFieldsFromFlowKey(
 			func(p *proto.PolicyHit) string {
 				return p.Name
