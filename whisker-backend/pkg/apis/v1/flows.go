@@ -151,8 +151,10 @@ func (p MatchType) AsProto() proto.MatchType { return proto.MatchType(p) }
 type Reporters []Reporter
 type Reporter proto.Reporter
 
-func (p Reporter) String() string               { return proto.Reporter(p).String() }
-func (p Reporter) MarshalJSON() ([]byte, error) { return marshalToBytes(p) }
+func (p Reporter) String() string { return proto.Reporter(p).String() }
+func (p Reporter) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf("\"%s\"", strings.ToLower(p.String()))), nil
+}
 func (p *Reporter) UnmarshalJSON(b []byte) error {
 	return unmarshalProtoEnum(&p, b, proto.Reporter_value)
 }
