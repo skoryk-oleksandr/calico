@@ -148,25 +148,16 @@ func (p *MatchType) UnmarshalJSON(b []byte) error {
 }
 func (p MatchType) AsProto() proto.MatchType { return proto.MatchType(p) }
 
-type Reporters []Reporter
 type Reporter proto.Reporter
 
 func (p Reporter) String() string { return proto.Reporter(p).String() }
 func (p Reporter) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf("\"%s\"", strings.ToLower(p.String()))), nil
+	return marshalToBytes(p)
 }
 func (p *Reporter) UnmarshalJSON(b []byte) error {
 	return unmarshalProtoEnum(&p, b, proto.Reporter_value)
 }
 func (p Reporter) AsProto() proto.Reporter { return proto.Reporter(p) }
-
-func (r Reporters) AsProtos() []proto.Reporter {
-	var protos []proto.Reporter
-	for _, r1 := range r {
-		protos = append(protos, r1.AsProto())
-	}
-	return protos
-}
 
 type PolicyKind proto.PolicyKind
 
@@ -235,7 +226,7 @@ type Filters struct {
 	DestPorts        FilterMatches[int64]  `json:"dest_ports,omitempty"`
 	Actions          Actions               `json:"actions,omitempty"`
 	Policies         []PolicyMatch         `json:"policies,omitempty"`
-	Reporters        Reporters             `json:"reporters,omitempty"`
+	Reporter         Reporter              `json:"reporter,omitempty"`
 }
 
 type PolicyMatch struct {

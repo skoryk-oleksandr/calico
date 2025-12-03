@@ -205,7 +205,7 @@ message Filter {
   repeated PolicyMatch policies = 8;
 
   // Reporter filters on the reporter field. Combined using logical OR.
-  repeated Reporter reporters = 9;
+  Reporter reporter = 9;
 }
 
 enum MatchType {

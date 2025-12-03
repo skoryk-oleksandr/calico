@@ -7,12 +7,11 @@
 package proto
 
 import (
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
-
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -1165,7 +1164,7 @@ type Filter struct {
 	// Policies matches on policy fields. Combined using logical OR.
 	Policies []*PolicyMatch `protobuf:"bytes,8,rep,name=policies,proto3" json:"policies,omitempty"`
 	// Reporter filters on the reporter field. Combined using logical OR.
-	Reporters     []Reporter `protobuf:"varint,9,rep,packed,name=reporters,proto3,enum=goldmane.Reporter" json:"reporters,omitempty"`
+	Reporter      Reporter `protobuf:"varint,9,opt,name=reporter,proto3,enum=goldmane.Reporter" json:"reporter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1256,11 +1255,11 @@ func (x *Filter) GetPolicies() []*PolicyMatch {
 	return nil
 }
 
-func (x *Filter) GetReporters() []Reporter {
+func (x *Filter) GetReporter() Reporter {
 	if x != nil {
-		return x.Reporters
+		return x.Reporter
 	}
-	return nil
+	return Reporter_ReporterUnspecified
 }
 
 type StringMatch struct {
@@ -2361,7 +2360,7 @@ const file_api_proto_rawDesc = "" +
 	"\n" +
 	"FlowResult\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\"\n" +
-	"\x04flow\x18\x02 \x01(\v2\x0e.goldmane.FlowR\x04flow\"\xf6\x03\n" +
+	"\x04flow\x18\x02 \x01(\v2\x0e.goldmane.FlowR\x04flow\"\xf4\x03\n" +
 	"\x06Filter\x128\n" +
 	"\fsource_names\x18\x01 \x03(\v2\x15.goldmane.StringMatchR\vsourceNames\x12B\n" +
 	"\x11source_namespaces\x18\x02 \x03(\v2\x15.goldmane.StringMatchR\x10sourceNamespaces\x124\n" +
@@ -2372,8 +2371,8 @@ const file_api_proto_rawDesc = "" +
 	"\n" +
 	"dest_ports\x18\x06 \x03(\v2\x13.goldmane.PortMatchR\tdestPorts\x12*\n" +
 	"\aactions\x18\a \x03(\x0e2\x10.goldmane.ActionR\aactions\x121\n" +
-	"\bpolicies\x18\b \x03(\v2\x15.goldmane.PolicyMatchR\bpolicies\x120\n" +
-	"\treporters\x18\t \x03(\x0e2\x12.goldmane.ReporterR\treporters\"L\n" +
+	"\bpolicies\x18\b \x03(\v2\x15.goldmane.PolicyMatchR\bpolicies\x12.\n" +
+	"\breporter\x18\t \x01(\x0e2\x12.goldmane.ReporterR\breporter\"L\n" +
 	"\vStringMatch\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\tR\x05value\x12'\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x13.goldmane.MatchTypeR\x04type\"\x1f\n" +
@@ -2611,7 +2610,7 @@ var file_api_proto_depIdxs = []int32{
 	20, // 15: goldmane.Filter.dest_ports:type_name -> goldmane.PortMatch
 	1,  // 16: goldmane.Filter.actions:type_name -> goldmane.Action
 	22, // 17: goldmane.Filter.policies:type_name -> goldmane.PolicyMatch
-	6,  // 18: goldmane.Filter.reporters:type_name -> goldmane.Reporter
+	6,  // 18: goldmane.Filter.reporter:type_name -> goldmane.Reporter
 	2,  // 19: goldmane.StringMatch.type:type_name -> goldmane.MatchType
 	4,  // 20: goldmane.SortOption.sort_by:type_name -> goldmane.SortBy
 	3,  // 21: goldmane.PolicyMatch.kind:type_name -> goldmane.PolicyKind
