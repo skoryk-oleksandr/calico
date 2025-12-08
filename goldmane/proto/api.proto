@@ -206,6 +206,9 @@ message Filter {
 
   // Reporter filters on the reporter field. Combined using logical OR.
   Reporter reporter = 9;
+
+  // Pending/Staged Actions filters on the action field. Combined using logical OR.
+  repeated Action pending_actions = 10;
 }
 
 enum MatchType {
