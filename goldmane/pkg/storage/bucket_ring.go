@@ -190,9 +190,12 @@ func extractPolicyFieldsFromFlowKey(getField func(*proto.PolicyHit) string) func
 		policyTrace := types.FlowLogPolicyToProto(key.Policies())
 		for _, policyList := range [][]*proto.PolicyHit{policyTrace.EnforcedPolicies, policyTrace.PendingPolicies} {
 			for _, p := range policyList {
+				if p.Kind == proto.PolicyKind_Profile {
+					continue
+				}
+
 				val := getField(p)
 				if p.Trigger != nil {
-					// EndOfTier policies store the tier in the trigger.
 					val = getField(p.Trigger)
 				}
 
