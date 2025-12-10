@@ -1748,6 +1748,104 @@ func TestFilter(t *testing.T) {
 			},
 			numFlows: 0,
 		},
+
+		{
+			name: "Reporter filter - Src",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Reporter: proto.Reporter_Src,
+				},
+			},
+			numFlows: 5,
+			check: func(fl *proto.FlowResult) error {
+				if fl.Flow.Key.Reporter != proto.Reporter_Src {
+					return fmt.Errorf("Expected Reporter to be Src, got %s", fl.Flow.Key.Reporter)
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "Reporter filter - Dst",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Reporter: proto.Reporter_Dst,
+				},
+			},
+			numFlows: 5,
+			check: func(fl *proto.FlowResult) error {
+				if fl.Flow.Key.Reporter != proto.Reporter_Dst {
+					return fmt.Errorf("Expected Reporter to be Dst, got %s", fl.Flow.Key.Reporter)
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "PendingActions filter - Allow",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					PendingActions: []proto.Action{proto.Action_Allow},
+				},
+			},
+			numFlows: 7,
+			check: func(fl *proto.FlowResult) error {
+				hasPendingAllow := false
+				for _, p := range fl.Flow.Key.Policies.PendingPolicies {
+					if p.Action == proto.Action_Allow {
+						hasPendingAllow = true
+						break
+					}
+				}
+				if !hasPendingAllow {
+					return fmt.Errorf("Expected at least one pending policy with Allow action")
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "PendingActions filter - Deny",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					PendingActions: []proto.Action{proto.Action_Deny},
+				},
+			},
+			numFlows: 3,
+			check: func(fl *proto.FlowResult) error {
+				hasPendingDeny := false
+				for _, p := range fl.Flow.Key.Policies.PendingPolicies {
+					if p.Action == proto.Action_Deny {
+						hasPendingDeny = true
+						break
+					}
+				}
+				if !hasPendingDeny {
+					return fmt.Errorf("Expected at least one pending policy with Deny action")
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "PendingActions filter - multiple actions",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					PendingActions: []proto.Action{proto.Action_Allow, proto.Action_Deny},
+				},
+			},
+			numFlows: 10,
+		},
+
+		{
+			name: "PendingActions filter - Pass, no match",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					PendingActions: []proto.Action{proto.Action_Pass},
+				},
+			},
+			numFlows: 0,
+		},
 	}
 
 	for _, tc := range tests {
@@ -1779,6 +1877,22 @@ func TestFilter(t *testing.T) {
 				fl.Key.DestNamespace = fmt.Sprintf("dest-ns-%d", i)
 				fl.Key.Proto = "tcp"
 				fl.Key.DestPort = int64(i)
+
+				// Set Reporter - alternate between Src and Dst
+				if i%2 == 0 {
+					fl.Key.Reporter = proto.Reporter_Src
+				} else {
+					fl.Key.Reporter = proto.Reporter_Dst
+				}
+
+				// Set pending policy action - mix of Allow and Deny
+				var pendingAction proto.Action
+				if i < 3 {
+					pendingAction = proto.Action_Deny
+				} else {
+					pendingAction = proto.Action_Allow
+				}
+
 				fl.Key.Policies = &proto.PolicyTrace{
 					EnforcedPolicies: []*proto.PolicyHit{
 						{
@@ -1794,7 +1908,7 @@ func TestFilter(t *testing.T) {
 							Tier:      fmt.Sprintf("pending-tier-%d", i),
 							Name:      fmt.Sprintf("pending-name-%d", i),
 							Namespace: fmt.Sprintf("pending-ns-%d", i),
-							Action:    proto.Action_Allow,
+							Action:    pendingAction,
 							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
 						},
 					},
@@ -1887,6 +2001,22 @@ func TestFilterHints(t *testing.T) {
 			},
 			numResp: 10,
 		},
+
+		{
+			name: "Policy name excludes Profile kind",
+			req: &proto.FilterHintsRequest{
+				Type: proto.FilterType_FilterTypePolicyName,
+			},
+			numResp: 10,
+			check: func(hints []*proto.FilterHint) error {
+				for _, hint := range hints {
+					if strings.Contains(hint.Value, "__PROFILE__") {
+						return fmt.Errorf("Profile policy should be excluded, got %s", hint.Value)
+					}
+				}
+				return nil
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -1923,6 +2053,13 @@ func TestFilterHints(t *testing.T) {
 						{
 							Name: fmt.Sprintf("name-%d", i),
 							Tier: fmt.Sprintf("tier-%d", i),
+							Kind: proto.PolicyKind_CalicoNetworkPolicy,
+						},
+						// Add a Profile policy that should be excluded from hints
+						{
+							Name: fmt.Sprintf("profile-%d", i),
+							Tier: "__PROFILE__",
+							Kind: proto.PolicyKind_Profile,
 						},
 					},
 				}
