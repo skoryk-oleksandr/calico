@@ -1533,6 +1533,43 @@ func TestSortOrder(t *testing.T) {
 }
 
 func TestFilter(t *testing.T) {
+	// Helper function to verify policy matches
+	policyHasKind := func(policies []*proto.PolicyHit, kind proto.PolicyKind) bool {
+		for _, p := range policies {
+			if p.Kind == kind {
+				return true
+			}
+		}
+		return false
+	}
+
+	policyHasTier := func(policies []*proto.PolicyHit, tier string) bool {
+		for _, p := range policies {
+			if p.Tier == tier {
+				return true
+			}
+		}
+		return false
+	}
+
+	policyHasNamespace := func(policies []*proto.PolicyHit, namespace string) bool {
+		for _, p := range policies {
+			if p.Namespace == namespace {
+				return true
+			}
+		}
+		return false
+	}
+
+	policyHasName := func(policies []*proto.PolicyHit, name string) bool {
+		for _, p := range policies {
+			if p.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+
 	type tc struct {
 		name     string
 		req      *proto.FlowListRequest
@@ -1590,6 +1627,13 @@ func TestFilter(t *testing.T) {
 				},
 			},
 			numFlows: 2,
+			check: func(fl *proto.FlowResult) error {
+				ns := fl.Flow.Key.SourceNamespace
+				if ns != "source-ns-1" && ns != "source-ns-2" {
+					return fmt.Errorf("Expected SourceNamespace to be source-ns-1 or source-ns-2, got %s", ns)
+				}
+				return nil
+			},
 		},
 
 		{
@@ -1630,6 +1674,13 @@ func TestFilter(t *testing.T) {
 				},
 			},
 			numFlows: 2,
+			check: func(fl *proto.FlowResult) error {
+				port := fl.Flow.Key.DestPort
+				if port != 5 && port != 6 {
+					return fmt.Errorf("Expected DestPort to be 5 or 6, got %d", port)
+				}
+				return nil
+			},
 		},
 
 		{
@@ -1641,8 +1692,8 @@ func TestFilter(t *testing.T) {
 			},
 			numFlows: 1,
 			check: func(fl *proto.FlowResult) error {
-				if fl.Flow.Key.Policies.EnforcedPolicies[0].Tier != "tier-5" {
-					return fmt.Errorf("Expected Tier to be tier-5, got %s", fl.Flow.Key.Policies.EnforcedPolicies[0].Tier)
+				if !policyHasTier(fl.Flow.Key.Policies.EnforcedPolicies, "tier-5") {
+					return fmt.Errorf("Expected flow to have policy with tier-5")
 				}
 				return nil
 			},
@@ -1656,6 +1707,13 @@ func TestFilter(t *testing.T) {
 				},
 			},
 			numFlows: 2,
+			check: func(fl *proto.FlowResult) error {
+				if !policyHasTier(fl.Flow.Key.Policies.EnforcedPolicies, "tier-5") &&
+					!policyHasTier(fl.Flow.Key.Policies.EnforcedPolicies, "tier-6") {
+					return fmt.Errorf("Expected flow to have policy with tier-5 or tier-6")
+				}
+				return nil
+			},
 		},
 
 		{
@@ -1674,6 +1732,21 @@ func TestFilter(t *testing.T) {
 				},
 			},
 			numFlows: 1,
+			check: func(fl *proto.FlowResult) error {
+				policies := fl.Flow.Key.Policies.EnforcedPolicies
+				found := false
+				for _, p := range policies {
+					if p.Tier == "tier-5" && p.Name == "name-5" && p.Namespace == "ns-5" &&
+						p.Action == proto.Action_Allow && p.Kind == proto.PolicyKind_CalicoNetworkPolicy {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("Expected flow to have policy matching all criteria")
+				}
+				return nil
+			},
 		},
 
 		{
@@ -1701,7 +1774,14 @@ func TestFilter(t *testing.T) {
 					},
 				},
 			},
-			numFlows: 10,
+			numFlows: 7, // Flows 2, 4, 5, 6, 7, 8, 9 have CalicoNetworkPolicy
+			check: func(fl *proto.FlowResult) error {
+				if !policyHasKind(fl.Flow.Key.Policies.EnforcedPolicies, proto.PolicyKind_CalicoNetworkPolicy) &&
+					!policyHasKind(fl.Flow.Key.Policies.PendingPolicies, proto.PolicyKind_CalicoNetworkPolicy) {
+					return fmt.Errorf("Expected flow to have CalicoNetworkPolicy")
+				}
+				return nil
+			},
 		},
 
 		{
@@ -1716,6 +1796,12 @@ func TestFilter(t *testing.T) {
 				},
 			},
 			numFlows: 1,
+			check: func(fl *proto.FlowResult) error {
+				if !policyHasNamespace(fl.Flow.Key.Policies.PendingPolicies, "pending-ns-5") {
+					return fmt.Errorf("Expected flow to have pending policy with namespace pending-ns-5")
+				}
+				return nil
+			},
 		},
 
 		{
@@ -1732,6 +1818,12 @@ func TestFilter(t *testing.T) {
 				},
 			},
 			numFlows: 10,
+			check: func(fl *proto.FlowResult) error {
+				if !strings.Contains(fl.Flow.Key.DestNamespace, "dest") {
+					return fmt.Errorf("Expected DestNamespace to contain 'dest', got %s", fl.Flow.Key.DestNamespace)
+				}
+				return nil
+			},
 		},
 
 		{
@@ -1747,6 +1839,294 @@ func TestFilter(t *testing.T) {
 				},
 			},
 			numFlows: 0,
+		},
+
+		// New test cases for comprehensive policy filter coverage
+		{
+			name: "PolicyKind filter - NetworkPolicy",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Policies: []*proto.PolicyMatch{{Kind: proto.PolicyKind_NetworkPolicy}},
+				},
+			},
+			numFlows: 2, // Flows with index 1 and 3
+			check: func(fl *proto.FlowResult) error {
+				if !policyHasKind(fl.Flow.Key.Policies.EnforcedPolicies, proto.PolicyKind_NetworkPolicy) {
+					return fmt.Errorf("Expected flow to have NetworkPolicy kind")
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "PolicyTier filter - default",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Policies: []*proto.PolicyMatch{{Tier: "default"}},
+				},
+			},
+			numFlows: 3, // Flows with default tier
+			check: func(fl *proto.FlowResult) error {
+				if !policyHasTier(fl.Flow.Key.Policies.EnforcedPolicies, "default") {
+					return fmt.Errorf("Expected flow to have tier 'default'")
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "PolicyNamespace filter - calico-system",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Policies: []*proto.PolicyMatch{{Namespace: "calico-system"}},
+				},
+			},
+			numFlows: 2, // Flows 1 and 3 have calico-system namespace
+			check: func(fl *proto.FlowResult) error {
+				if !policyHasNamespace(fl.Flow.Key.Policies.EnforcedPolicies, "calico-system") &&
+					!policyHasNamespace(fl.Flow.Key.Policies.PendingPolicies, "calico-system") {
+					return fmt.Errorf("Expected flow to have policy namespace 'calico-system'")
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "PolicyName filter - allow-egress",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Policies: []*proto.PolicyMatch{{Name: "allow-egress"}},
+				},
+			},
+			numFlows: 2, // Flows 1 and 3 have allow-egress name
+			check: func(fl *proto.FlowResult) error {
+				if !policyHasName(fl.Flow.Key.Policies.EnforcedPolicies, "allow-egress") &&
+					!policyHasName(fl.Flow.Key.Policies.PendingPolicies, "allow-egress") {
+					return fmt.Errorf("Expected flow to have policy name 'allow-egress'")
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "OR Logic - Profile OR NetworkPolicy",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Policies: []*proto.PolicyMatch{
+						{Kind: proto.PolicyKind_Profile},
+						{Kind: proto.PolicyKind_NetworkPolicy},
+					},
+				},
+			},
+			numFlows: 3, // Flows with Profile (1) or NetworkPolicy (2)
+			check: func(fl *proto.FlowResult) error {
+				if !policyHasKind(fl.Flow.Key.Policies.EnforcedPolicies, proto.PolicyKind_Profile) &&
+					!policyHasKind(fl.Flow.Key.Policies.EnforcedPolicies, proto.PolicyKind_NetworkPolicy) {
+					return fmt.Errorf("Expected flow to have Profile or NetworkPolicy kind")
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "AND Logic - NetworkPolicy AND calico-system namespace",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Policies: []*proto.PolicyMatch{
+						{
+							Kind:      proto.PolicyKind_NetworkPolicy,
+							Namespace: "calico-system",
+						},
+					},
+				},
+			},
+			numFlows: 2, // Flows 1 and 3 have NetworkPolicy in calico-system
+			check: func(fl *proto.FlowResult) error {
+				policies := append(fl.Flow.Key.Policies.EnforcedPolicies, fl.Flow.Key.Policies.PendingPolicies...)
+				found := false
+				for _, p := range policies {
+					if p.Kind == proto.PolicyKind_NetworkPolicy && p.Namespace == "calico-system" {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("Expected flow to have NetworkPolicy in calico-system namespace")
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "Combined OR and AND - (ns-1 OR ns-2) AND (NetworkPolicy OR CalicoNetworkPolicy)",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Policies: []*proto.PolicyMatch{
+						{Kind: proto.PolicyKind_NetworkPolicy, Namespace: "ns-1"},
+						{Kind: proto.PolicyKind_CalicoNetworkPolicy, Namespace: "ns-1"},
+						{Kind: proto.PolicyKind_NetworkPolicy, Namespace: "ns-2"},
+						{Kind: proto.PolicyKind_CalicoNetworkPolicy, Namespace: "ns-2"},
+					},
+				},
+			},
+			numFlows: 2, // Flows 2 (ns-1) and 4 (ns-2) with CalicoNetworkPolicy
+			check: func(fl *proto.FlowResult) error {
+				policies := append(fl.Flow.Key.Policies.EnforcedPolicies, fl.Flow.Key.Policies.PendingPolicies...)
+				found := false
+				for _, p := range policies {
+					if (p.Kind == proto.PolicyKind_NetworkPolicy || p.Kind == proto.PolicyKind_CalicoNetworkPolicy) &&
+						(p.Namespace == "ns-1" || p.Namespace == "ns-2") {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("Expected flow to match combined OR/AND criteria")
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "Reporter filter - Src",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Reporter: proto.Reporter_Src,
+				},
+			},
+			numFlows: 5, // Half of the flows are from Src reporter
+			check: func(fl *proto.FlowResult) error {
+				if fl.Flow.Key.Reporter != proto.Reporter_Src {
+					return fmt.Errorf("Expected Reporter to be Src, got %v", fl.Flow.Key.Reporter)
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "Reporter filter - Dst",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Reporter: proto.Reporter_Dst,
+				},
+			},
+			numFlows: 5, // Half of the flows are from Dst reporter
+			check: func(fl *proto.FlowResult) error {
+				if fl.Flow.Key.Reporter != proto.Reporter_Dst {
+					return fmt.Errorf("Expected Reporter to be Dst, got %v", fl.Flow.Key.Reporter)
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "Actions filter - Allow",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Actions: []proto.Action{proto.Action_Allow},
+				},
+			},
+			numFlows: 6, // Flows with Allow action
+			check: func(fl *proto.FlowResult) error {
+				if fl.Flow.Key.Action != proto.Action_Allow {
+					return fmt.Errorf("Expected Action to be Allow, got %v", fl.Flow.Key.Action)
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "Actions filter - Deny",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Actions: []proto.Action{proto.Action_Deny},
+				},
+			},
+			numFlows: 2, // Flows with Deny action
+			check: func(fl *proto.FlowResult) error {
+				if fl.Flow.Key.Action != proto.Action_Deny {
+					return fmt.Errorf("Expected Action to be Deny, got %v", fl.Flow.Key.Action)
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "Actions filter - Pass",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Actions: []proto.Action{proto.Action_Pass},
+				},
+			},
+			numFlows: 2, // Flows with Pass action
+			check: func(fl *proto.FlowResult) error {
+				if fl.Flow.Key.Action != proto.Action_Pass {
+					return fmt.Errorf("Expected Action to be Pass, got %v", fl.Flow.Key.Action)
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "PendingActions filter - Allow",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					PendingActions: []proto.Action{proto.Action_Allow},
+				},
+			},
+			numFlows: 6, // Flows 0, 1, 2, 3, 6, 9 have pending Allow action
+			check: func(fl *proto.FlowResult) error {
+				found := false
+				for _, p := range fl.Flow.Key.Policies.PendingPolicies {
+					if p.Action == proto.Action_Allow {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("Expected flow to have pending policy with Allow action")
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "PendingActions filter - Deny",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					PendingActions: []proto.Action{proto.Action_Deny},
+				},
+			},
+			numFlows: 2, // Flows 4 and 7 have pending Deny action
+			check: func(fl *proto.FlowResult) error {
+				found := false
+				for _, p := range fl.Flow.Key.Policies.PendingPolicies {
+					if p.Action == proto.Action_Deny {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("Expected flow to have pending policy with Deny action")
+				}
+				return nil
+			},
+		},
+
+		{
+			name: "No Policies filter - Profile kind",
+			req: &proto.FlowListRequest{
+				Filter: &proto.Filter{
+					Policies: []*proto.PolicyMatch{{Kind: proto.PolicyKind_Profile}},
+				},
+			},
+			numFlows: 1, // Flows not affected by any policy (using Profile)
+			check: func(fl *proto.FlowResult) error {
+				if !policyHasKind(fl.Flow.Key.Policies.EnforcedPolicies, proto.PolicyKind_Profile) {
+					return fmt.Errorf("Expected flow to have Profile kind (no policies)")
+				}
+				return nil
+			},
 		},
 	}
 
@@ -1767,7 +2147,7 @@ func TestFilter(t *testing.T) {
 			defer setupTest(t, opts...)()
 			<-gm.Run(c.Now().Unix())
 
-			// Create 10 flows, with a mix of fields to filter on.
+			// Create 10 flows with diverse configurations to support comprehensive filter testing.
 			for i := range 10 {
 				// Start with a base flow.
 				fl := testutils.NewRandomFlow(c.Now().Unix() - 1)
@@ -1779,25 +2159,137 @@ func TestFilter(t *testing.T) {
 				fl.Key.DestNamespace = fmt.Sprintf("dest-ns-%d", i)
 				fl.Key.Proto = "tcp"
 				fl.Key.DestPort = int64(i)
-				fl.Key.Policies = &proto.PolicyTrace{
-					EnforcedPolicies: []*proto.PolicyHit{
+
+				// Assign different reporters (alternating Src/Dst)
+				if i%2 == 0 {
+					fl.Key.Reporter = proto.Reporter_Src
+				} else {
+					fl.Key.Reporter = proto.Reporter_Dst
+				}
+
+				// Assign different actions
+				var action proto.Action
+				switch i % 5 {
+				case 0, 1, 2:
+					action = proto.Action_Allow
+				case 3:
+					action = proto.Action_Deny
+				case 4:
+					action = proto.Action_Pass
+				}
+				fl.Key.Action = action
+
+				// Assign different policy kinds and configurations
+				var enforcedPolicies []*proto.PolicyHit
+				var pendingPolicies []*proto.PolicyHit
+
+				switch i {
+				case 0:
+					// Profile kind - no policies applied
+					enforcedPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_Profile,
+							Tier:      "default",
+							Name:      "default-profile",
+							Namespace: "",
+							Action:    proto.Action_Allow,
+						},
+					}
+					pendingPolicies = enforcedPolicies
+				case 1, 3:
+					// NetworkPolicy
+					enforcedPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_NetworkPolicy,
+							Tier:      "default",
+							Name:      "allow-egress",
+							Namespace: "calico-system",
+							Action:    action,
+						},
+					}
+					pendingPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_NetworkPolicy,
+							Tier:      "default",
+							Name:      "pending-allow",
+							Namespace: "calico-system",
+							Action:    proto.Action_Allow,
+						},
+					}
+				case 2:
+					// CalicoNetworkPolicy in ns-1
+					enforcedPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
+							Tier:      "application",
+							Name:      "app-policy",
+							Namespace: "ns-1",
+							Action:    action,
+						},
+					}
+					pendingPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
+							Tier:      "application",
+							Name:      "pending-app-policy",
+							Namespace: "ns-1",
+							Action:    proto.Action_Allow,
+						},
+					}
+				case 4:
+					// CalicoNetworkPolicy in ns-2
+					enforcedPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
+							Tier:      "security",
+							Name:      "security-policy",
+							Namespace: "ns-2",
+							Action:    action,
+						},
+					}
+					pendingPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
+							Tier:      "security",
+							Name:      "pending-security",
+							Namespace: "ns-2",
+							Action:    proto.Action_Deny,
+						},
+					}
+				case 5, 6, 7, 8, 9:
+					// Standard CalicoNetworkPolicy with tier-i, name-i, ns-i
+					enforcedPolicies = []*proto.PolicyHit{
 						{
 							Tier:      fmt.Sprintf("tier-%d", i),
 							Name:      fmt.Sprintf("name-%d", i),
 							Namespace: fmt.Sprintf("ns-%d", i),
-							Action:    proto.Action_Allow,
+							Action:    action,
 							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
 						},
-					},
-					PendingPolicies: []*proto.PolicyHit{
+					}
+					// Assign different pending actions
+					var pendingAction proto.Action
+					if i%3 == 0 {
+						pendingAction = proto.Action_Allow
+					} else if i%3 == 1 {
+						pendingAction = proto.Action_Deny
+					} else {
+						pendingAction = proto.Action_Pass
+					}
+					pendingPolicies = []*proto.PolicyHit{
 						{
 							Tier:      fmt.Sprintf("pending-tier-%d", i),
 							Name:      fmt.Sprintf("pending-name-%d", i),
 							Namespace: fmt.Sprintf("pending-ns-%d", i),
-							Action:    proto.Action_Allow,
+							Action:    pendingAction,
 							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
 						},
-					},
+					}
+				}
+
+				fl.Key.Policies = &proto.PolicyTrace{
+					EnforcedPolicies: enforcedPolicies,
+					PendingPolicies:  pendingPolicies,
 				}
 
 				// Send it to goldmane.
@@ -1878,14 +2370,62 @@ func TestFilterHints(t *testing.T) {
 			req: &proto.FilterHintsRequest{
 				Type: proto.FilterType_FilterTypePolicyTier,
 			},
-			numResp: 10,
+			numResp: 13, // application, default, security, tier-5...9, pending-tier-5...9
 		},
 		{
 			name: "Policy name, no filters",
 			req: &proto.FilterHintsRequest{
 				Type: proto.FilterType_FilterTypePolicyName,
 			},
-			numResp: 10,
+			numResp: 16, // All policy names from enforced and pending
+		},
+		
+		// New test cases for comprehensive policy filter hints coverage
+		{
+			name: "PolicyKind hints",
+			req: &proto.FilterHintsRequest{
+				Type: proto.FilterType_FilterTypePolicyKind,
+			},
+			numResp: 2, // NetworkPolicy and CalicoNetworkPolicy (and Profile)
+		},
+		{
+			name: "PolicyNamespace hints",
+			req: &proto.FilterHintsRequest{
+				Type: proto.FilterType_FilterTypePolicyNamespace,
+			},
+			numResp: 13, // calico-system, ns-1, ns-2, ns-5...9, pending-ns-5...9
+		},
+		{
+			name: "PolicyTier hints with PolicyKind filter (cascading)",
+			req: &proto.FilterHintsRequest{
+				Type: proto.FilterType_FilterTypePolicyTier,
+				Filter: &proto.Filter{
+					Policies: []*proto.PolicyMatch{{Kind: proto.PolicyKind_NetworkPolicy}},
+				},
+			},
+			numResp: 1, // Only "default" tier has NetworkPolicy
+		},
+		{
+			name: "PolicyName hints with Tier and Namespace filters (cascading)",
+			req: &proto.FilterHintsRequest{
+				Type: proto.FilterType_FilterTypePolicyName,
+				Filter: &proto.Filter{
+					Policies: []*proto.PolicyMatch{
+						{Tier: "application", Namespace: "ns-1"},
+					},
+				},
+			},
+			numResp: 2, // "app-policy" and "pending-app-policy"
+		},
+		{
+			name: "PolicyNamespace hints with PolicyKind filter",
+			req: &proto.FilterHintsRequest{
+				Type: proto.FilterType_FilterTypePolicyNamespace,
+				Filter: &proto.Filter{
+					Policies: []*proto.PolicyMatch{{Kind: proto.PolicyKind_CalicoNetworkPolicy}},
+				},
+			},
+			numResp: 12, // ns-1, ns-2, ns-5, ns-6, ns-7, ns-8, ns-9 + pending-ns-5, pending-ns-6, pending-ns-7, pending-ns-8, pending-ns-9
 		},
 	}
 
@@ -1906,7 +2446,8 @@ func TestFilterHints(t *testing.T) {
 			defer setupTest(t, opts...)()
 			<-gm.Run(c.Now().Unix())
 
-			// Create 10 flows, with a mix of fields to filter on.
+			// Create 10 flows with diverse configurations to support comprehensive filter hints testing.
+			// Use the same diverse setup as TestFilter to ensure consistency.
 			for i := range 10 {
 				// Start with a base flow.
 				fl := testutils.NewRandomFlow(c.Now().Unix() - 1)
@@ -1918,13 +2459,137 @@ func TestFilterHints(t *testing.T) {
 				fl.Key.DestNamespace = fmt.Sprintf("dest-ns-%d", i)
 				fl.Key.Proto = "tcp"
 				fl.Key.DestPort = int64(i)
-				fl.Key.Policies = &proto.PolicyTrace{
-					EnforcedPolicies: []*proto.PolicyHit{
+
+				// Assign different reporters (alternating Src/Dst)
+				if i%2 == 0 {
+					fl.Key.Reporter = proto.Reporter_Src
+				} else {
+					fl.Key.Reporter = proto.Reporter_Dst
+				}
+
+				// Assign different actions
+				var action proto.Action
+				switch i % 5 {
+				case 0, 1, 2:
+					action = proto.Action_Allow
+				case 3:
+					action = proto.Action_Deny
+				case 4:
+					action = proto.Action_Pass
+				}
+				fl.Key.Action = action
+
+				// Assign different policy kinds and configurations
+				var enforcedPolicies []*proto.PolicyHit
+				var pendingPolicies []*proto.PolicyHit
+
+				switch i {
+				case 0:
+					// Profile kind - no policies applied
+					enforcedPolicies = []*proto.PolicyHit{
 						{
-							Name: fmt.Sprintf("name-%d", i),
-							Tier: fmt.Sprintf("tier-%d", i),
+							Kind:      proto.PolicyKind_Profile,
+							Tier:      "default",
+							Name:      "default-profile",
+							Namespace: "",
+							Action:    proto.Action_Allow,
 						},
-					},
+					}
+					pendingPolicies = enforcedPolicies
+				case 1, 3:
+					// NetworkPolicy
+					enforcedPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_NetworkPolicy,
+							Tier:      "default",
+							Name:      "allow-egress",
+							Namespace: "calico-system",
+							Action:    action,
+						},
+					}
+					pendingPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_NetworkPolicy,
+							Tier:      "default",
+							Name:      "pending-allow",
+							Namespace: "calico-system",
+							Action:    proto.Action_Allow,
+						},
+					}
+				case 2:
+					// CalicoNetworkPolicy in ns-1
+					enforcedPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
+							Tier:      "application",
+							Name:      "app-policy",
+							Namespace: "ns-1",
+							Action:    action,
+						},
+					}
+					pendingPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
+							Tier:      "application",
+							Name:      "pending-app-policy",
+							Namespace: "ns-1",
+							Action:    proto.Action_Allow,
+						},
+					}
+				case 4:
+					// CalicoNetworkPolicy in ns-2
+					enforcedPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
+							Tier:      "security",
+							Name:      "security-policy",
+							Namespace: "ns-2",
+							Action:    action,
+						},
+					}
+					pendingPolicies = []*proto.PolicyHit{
+						{
+							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
+							Tier:      "security",
+							Name:      "pending-security",
+							Namespace: "ns-2",
+							Action:    proto.Action_Deny,
+						},
+					}
+				case 5, 6, 7, 8, 9:
+					// Standard CalicoNetworkPolicy with tier-i, name-i, ns-i
+					enforcedPolicies = []*proto.PolicyHit{
+						{
+							Tier:      fmt.Sprintf("tier-%d", i),
+							Name:      fmt.Sprintf("name-%d", i),
+							Namespace: fmt.Sprintf("ns-%d", i),
+							Action:    action,
+							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
+						},
+					}
+					// Assign different pending actions
+					var pendingAction proto.Action
+					if i%3 == 0 {
+						pendingAction = proto.Action_Allow
+					} else if i%3 == 1 {
+						pendingAction = proto.Action_Deny
+					} else {
+						pendingAction = proto.Action_Pass
+					}
+					pendingPolicies = []*proto.PolicyHit{
+						{
+							Tier:      fmt.Sprintf("pending-tier-%d", i),
+							Name:      fmt.Sprintf("pending-name-%d", i),
+							Namespace: fmt.Sprintf("pending-ns-%d", i),
+							Action:    pendingAction,
+							Kind:      proto.PolicyKind_CalicoNetworkPolicy,
+						},
+					}
+				}
+
+				fl.Key.Policies = &proto.PolicyTrace{
+					EnforcedPolicies: enforcedPolicies,
+					PendingPolicies:  pendingPolicies,
 				}
 
 				// Send it to goldmane.
