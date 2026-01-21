@@ -1,0 +1,83 @@
+version: v1.0
+
+name: banzai-calico weekdays
+
+agent:
+  machine:
+    type: c1-standard-1
+    os_image: ubuntu2204
+
+execution_time_limit:
+  hours: 12
+
+global_job_config:
+  prologue:
+    commands_file: ../scripts/global_prologue.sh
+  epilogue:
+    always:
+      commands:
+        - ./scripts/global_epilogue.sh
+  secrets:
+    - name: marvin-github-ssh-private-key
+    - name: banzai-secrets
+  env_vars:
+    # The skip "EndpointSlice\|Services\sshould" is needed to skip Endpoint slice tests which are only possible in k8s 1.21+
+    # The skip "Ingress.API|IngressClass.API" is needed to skip Ingress tests which are only possible in k8s 1.21+
+    # The skip "Proxy.version.v1.*pod.and.service.Proxy.\[" is needed to skip an upstream test that only works on k8s 1.24+
+    - name: K8S_E2E_FLAGS
+      value: --ginkgo.focus=should.correctly.implement.Host.Endpoint.NetworkPolicy --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|WireGuard|EndpointSlice|Services\sshould|Ingress.API|IngressClass.API|Proxy.version.v1.*pod.and.service.Proxy.\[)
+    - name: K8S_VERSION
+      value: "stable-3"
+    - name: FUNCTIONAL_AREA
+      value: "host-endpoint-tests.yml"
+    - name: IPV4_POD_CIDR
+      value: "192.168.0.0/16"
+    - name: K8S_E2E_IMAGE
+      value: "gcr.io/tigera-dev/k8s-e2e@sha256:5efb9bcc2c19e55b255a9979b6658a9497a001364add08a6c3007bc1e5436519"
+
+blocks:
+  - name: ARM64 - smoke tests
+    dependencies: [ ]
+    task:
+      env_vars:
+        - name: INSTALLER
+          value: operator
+        - name: STERN_CHECK
+          value: DISABLED
+      jobs:
+        - name: Kubeadm - ARM64
+          execution_time_limit:
+            hours: 4
+          commands:
+            - ./scripts/body_standard.sh
+          env_vars:
+            - name: PROVISIONER
+              value: gcp-kubeadm
+            - name: GOOGLE_MACHINE_TYPE
+              value: t2a-standard-2
+            - name: GOOGLE_REGION
+              value: us-central1
+            - name: GOOGLE_ZONE
+              value: us-central1-a
+            - name: K8S_VERSION
+              value: "stable-1"
+            - name: ENABLE_WIREGUARD
+              value: "false"
+          matrix:
+            - env_var: CLUSTER_IMAGE
+              values: [ "ubuntu-2204-lts-arm64"]
+            - env_var: DATAPLANE
+              values: [ "CalicoIptables"]
+
+promotions:
+  - name: Cleanup jobs
+    pipeline_file: cleanup.yml
+    auto_promote:
+      when: "result = 'stopped'"
+
+after_pipeline:
+  task:
+    jobs:
+      - name: Reports
+        commands:
+          - test-results gen-pipeline-report --force
