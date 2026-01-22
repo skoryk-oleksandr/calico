@@ -31,7 +31,7 @@ global_job_config:
     - name: DATAPLANE
       value: CalicoNftables
     - name: KUBE_PROXY_MODE
-      value: "nftables"
+      value: "iptables"
     - name: INSTALLER
       value: "operator"
     - name: USE_PRIVATE_REGISTRY
