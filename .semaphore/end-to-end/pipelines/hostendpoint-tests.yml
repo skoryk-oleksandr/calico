@@ -41,7 +41,7 @@ global_job_config:
     - name: PRIVATE_REGISTRY
       value: "quay.io/" # Pull from quay to avoid Docker Hub rate limits
     - name: K8S_E2E_IMAGE
-      value: "gcr.io/tigera-dev/k8s-e2e@sha256:5efb9bcc2c19e55b255a9979b6658a9497a001364add08a6c3007bc1e5436519"
+      value: "gcr.io/tigera-dev/k8s-e2e@sha256:1d3bacffc007e75a4d9c871e2348d1baa42d7a64d09c2b1f480c373338cceb93"
 
 blocks:
   - name: Nftables mode, arm64, WG
