@@ -1204,8 +1204,42 @@ func (c *IPAMController) vmiExists(ns, vmiName string) bool {
 // While a migration is in progress, pod and VMI transitions are expected, but the
 // VM still intends to retain ownership of its IP address.
 func (c *IPAMController) isMigrating(ns, vmiName string) bool {
-	//TODO: Implementation TBD
-	return true
+	if c.virtClient == nil {
+		// If we cannot determine migration state, be conservative and
+		// assume not migrating.
+		return false
+	}
+
+	ctx := context.Background()
+
+	migrations, err := c.virtClient.
+		VirtualMachineInstanceMigration(ns).
+		List(ctx, metav1.ListOptions{})
+	if err != nil {
+		// On error, be conservative: do NOT assume migration,
+		// otherwise we could leak IPs forever.
+		log.WithError(err).
+			WithFields(map[string]interface{}{
+				"namespace": ns,
+				"vmi":       vmiName,
+			}).
+			Warn("Failed to list VMI migrations")
+		return false
+	}
+
+	for _, mig := range migrations.Items {
+		if mig.Spec.VMIName != vmiName {
+			continue
+		}
+
+		// Migration is active unless it is in a final phase
+		if mig.Status.Phase != kubevirtv1.MigrationSucceeded &&
+			mig.Status.Phase != kubevirtv1.MigrationFailed {
+			return true
+		}
+	}
+
+	return false
 }
 
 func withinGracePeriod(a *allocation, logc *log.Entry) bool {
