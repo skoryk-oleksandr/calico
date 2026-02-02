@@ -22,6 +22,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	uruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/projectcalico/calico/kube-controllers/pkg/config"
@@ -29,6 +30,7 @@ import (
 	"github.com/projectcalico/calico/kube-controllers/pkg/controllers/utils"
 	api "github.com/projectcalico/calico/libcalico-go/lib/apis/v3"
 	client "github.com/projectcalico/calico/libcalico-go/lib/clientv3"
+	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 )
 
 const (
@@ -40,6 +42,27 @@ const (
 	hepCreatedLabelValue  = "calico-kube-controllers"
 	timer                 = 5 * time.Minute
 )
+
+// tryCreateVirtClient attempts to create a KubeVirt client.
+// Returns nil if KubeVirt is not available.
+func tryCreateVirtClient(restConfig *rest.Config) kubevirt.VirtClientInterface {
+	if restConfig == nil {
+		log.Debug("No REST config provided.")
+		return nil
+	}
+
+	// Attempt to create a KubeVirt client from the REST config
+	virtClient, err := kubevirt.GetVirtClientFromRestConfig(restConfig)
+	if err != nil {
+		// This is expected if KubeVirt CRDs are not installed in the cluster
+		log.WithError(err).Debug("Failed to create KubeVirt client (likely KubeVirt not installed)")
+		return nil
+	}
+
+	// Wrap the client with our interface adapter
+	log.Info("Successfully created KubeVirt client for VMI IP validation")
+	return kubevirt.NewVirtClientAdapter(virtClient)
+}
 
 // NodeController implements the Controller interface.  It is responsible for monitoring
 // kubernetes nodes and responding to delete events by removing them from the Calico datastore.
@@ -69,6 +92,7 @@ func NewNodeController(ctx context.Context,
 	cfg config.NodeControllerConfig,
 	nodeInformer, podInformer cache.SharedIndexInformer,
 	dataFeed *utils.DataFeed,
+	restConfig *rest.Config,
 ) controller.Controller {
 	nc := &NodeController{
 		ctx:          ctx,
@@ -84,8 +108,11 @@ func NewNodeController(ctx context.Context,
 	nodeDeletionFuncs := []func(*v1.Node){}
 	podDeletionFuncs := []func(*v1.Pod){}
 
+	// Try to create a KubeVirt client for VMI validation (optional, can be nil)
+	virtClient := tryCreateVirtClient(restConfig)
+
 	// Create the IPAM controller.
-	nc.ipamCtrl = NewIPAMController(cfg, calicoClient, k8sClientset, podInformer.GetIndexer(), nodeInformer.GetIndexer())
+	nc.ipamCtrl = NewIPAMController(cfg, calicoClient, k8sClientset, podInformer.GetIndexer(), nodeInformer.GetIndexer(), virtClient)
 	nc.ipamCtrl.RegisterWith(nc.dataFeed)
 	nodeDeletionFuncs = append(nodeDeletionFuncs, nc.ipamCtrl.OnKubernetesNodeDeleted)
 	podDeletionFuncs = append(podDeletionFuncs, nc.ipamCtrl.OnKubernetesPodDeleted)

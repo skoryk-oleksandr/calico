@@ -31,6 +31,7 @@ import (
 	"k8s.io/apiserver/pkg/storage/etcd3"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
@@ -103,7 +104,7 @@ func main() {
 	log.SetLevel(logLevel)
 
 	// Build clients to be used by the controllers.
-	k8sClientset, calicoClient, err := getClients(cfg.Kubeconfig)
+	k8sClientset, calicoClient, k8sRestConfig, err := getClients(cfg.Kubeconfig)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to start")
 	}
@@ -187,7 +188,7 @@ func main() {
 
 		// any subsequent changes trigger a restart
 		controllerCtrl.restart = cCtrlr.ConfigChan()
-		controllerCtrl.InitControllers(ctx, runCfg, k8sClientset, calicoClient, dataFeed)
+		controllerCtrl.InitControllers(ctx, runCfg, k8sClientset, calicoClient, dataFeed, k8sRestConfig)
 	}
 
 	if cfg.DatastoreType == utils.Etcdv3 {
@@ -333,11 +334,11 @@ func startCompactor(ctx context.Context, interval time.Duration) {
 }
 
 // getClients builds and returns Kubernetes and Calico clients.
-func getClients(kubeconfig string) (*kubernetes.Clientset, client.Interface, error) {
+func getClients(kubeconfig string) (*kubernetes.Clientset, client.Interface, *rest.Config, error) {
 	// Get Calico client
 	config, err := apiconfig.LoadClientConfigFromEnvironment()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// Increase the client QPS on the Calico client.
@@ -347,14 +348,14 @@ func getClients(kubeconfig string) (*kubernetes.Clientset, client.Interface, err
 
 	calicoClient, err := client.New(*config)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to build Calico client: %s", err)
+		return nil, nil, nil, fmt.Errorf("failed to build Calico client: %s", err)
 	}
 
 	// Now build the Kubernetes client, we support in-cluster config and kubeconfig
 	// as means of configuring the client.
 	k8sconfig, err := winutils.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to build kubernetes client config: %s", err)
+		return nil, nil, nil, fmt.Errorf("failed to build kubernetes client config: %s", err)
 	}
 
 	// Increase the QPS of the Kubernetes client as well. This is also used heavily by the IPAM GC controller
@@ -365,10 +366,10 @@ func getClients(kubeconfig string) (*kubernetes.Clientset, client.Interface, err
 	// Get Kubernetes clientset
 	k8sClientset, err := kubernetes.NewForConfig(k8sconfig)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to build kubernetes client: %s", err)
+		return nil, nil, nil, fmt.Errorf("failed to build kubernetes client: %s", err)
 	}
 
-	return k8sClientset, calicoClient, nil
+	return k8sClientset, calicoClient, k8sconfig, nil
 }
 
 // Returns an etcdv3 client based on the environment. The client will be configured to
@@ -448,7 +449,7 @@ type controllerControl struct {
 	informers   []cache.SharedIndexInformer
 }
 
-func (cc *controllerControl) InitControllers(ctx context.Context, cfg config.RunConfig, k8sClientset *kubernetes.Clientset, calicoClient client.Interface, dataFeed *utils.DataFeed) {
+func (cc *controllerControl) InitControllers(ctx context.Context, cfg config.RunConfig, k8sClientset *kubernetes.Clientset, calicoClient client.Interface, dataFeed *utils.DataFeed, k8sRestConfig *rest.Config) {
 	// Create a shared informer factory to allow cache sharing between controllers monitoring the
 	// same resource.
 	factory := informers.NewSharedInformerFactory(k8sClientset, 0)
@@ -472,7 +473,7 @@ func (cc *controllerControl) InitControllers(ctx context.Context, cfg config.Run
 		cc.controllers["NetworkPolicy"] = policyController
 	}
 	if cfg.Controllers.Node != nil {
-		nodeController := node.NewNodeController(ctx, k8sClientset, calicoClient, *cfg.Controllers.Node, nodeInformer, podInformer, dataFeed)
+		nodeController := node.NewNodeController(ctx, k8sClientset, calicoClient, *cfg.Controllers.Node, nodeInformer, podInformer, dataFeed, k8sRestConfig)
 		cc.controllers["Node"] = nodeController
 		cc.registerInformers(podInformer, nodeInformer)
 	}

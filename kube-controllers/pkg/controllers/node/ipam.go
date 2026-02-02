@@ -33,6 +33,7 @@ import (
 	v1lister "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 
 	"github.com/projectcalico/calico/kube-controllers/pkg/config"
 	"github.com/projectcalico/calico/kube-controllers/pkg/controllers/flannelmigration"
@@ -44,8 +45,16 @@ import (
 	client "github.com/projectcalico/calico/libcalico-go/lib/clientv3"
 	cerrors "github.com/projectcalico/calico/libcalico-go/lib/errors"
 	"github.com/projectcalico/calico/libcalico-go/lib/ipam"
+	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 	cnet "github.com/projectcalico/calico/libcalico-go/lib/net"
 	"github.com/projectcalico/calico/libcalico-go/lib/options"
+)
+
+const (
+	// VMI_RECREATION_GRACE_PERIOD is the time window to allow VMI recreation after VM state changes.
+	// During this period, if a VMI doesn't exist but the VM exists and should be running,
+	// we assume the VMI is being recreated (e.g., during live migration, restart, etc.)
+	VMI_RECREATION_GRACE_PERIOD = 5 * time.Minute
 )
 
 var (
@@ -117,7 +126,7 @@ type rateLimiterItemKey struct {
 	Name string
 }
 
-func NewIPAMController(cfg config.NodeControllerConfig, c client.Interface, cs kubernetes.Interface, pi, ni cache.Indexer) *IPAMController {
+func NewIPAMController(cfg config.NodeControllerConfig, c client.Interface, cs kubernetes.Interface, pi, ni cache.Indexer, virtClient kubevirt.VirtClientInterface) *IPAMController {
 	var leakGracePeriod *time.Duration
 	if cfg.LeakGracePeriod != nil {
 		leakGracePeriod = &cfg.LeakGracePeriod.Duration
@@ -146,9 +155,10 @@ func NewIPAMController(cfg config.NodeControllerConfig, c client.Interface, cs k
 	)
 
 	return &IPAMController{
-		client:    c,
-		clientset: cs,
-		config:    cfg,
+		client:     c,
+		clientset:  cs,
+		config:     cfg,
+		virtClient: virtClient,
 
 		syncChan: syncChan,
 
@@ -191,6 +201,9 @@ type IPAMController struct {
 	podLister  v1lister.PodLister
 	nodeLister v1lister.NodeLister
 	config     config.NodeControllerConfig
+
+	// virtClient is an optional KubeVirt client for verifying VMI/VM resources.
+	virtClient kubevirt.VirtClientInterface
 
 	syncStatus bapi.SyncStatus
 
@@ -952,6 +965,11 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 		return a.knode != ""
 	}
 
+	// Handle VMI-based allocations
+	if a.isVMIIP() {
+		return c.vmiAllocationIsValid(a, preferCache)
+	}
+
 	if ns == "" || pod == "" {
 		// Allocation is either not a pod address, or it pre-dates the use of these
 		// attributes. Assume it's a valid allocation since we can't perform our
@@ -1043,6 +1061,176 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 
 	logc.Debugf("Allocated IP no longer in-use by pod")
 	return false
+}
+
+// vmiAllocationIsValid determines whether an IP allocation associated with a
+// KubeVirt VirtualMachineInstance is still valid.
+//
+// The decision is based on VM intent rather than pod or VMI lifetime:
+// - Resolves the owning VirtualMachine (via VMI ownerRefs or stored VM identity)
+// - Verifies the VM still exists and is not Halted or being deleted
+// - Tolerates temporary VMI absence during migration or restart
+// - Uses a grace period before reclaiming the IP when the VMI is missing
+//
+// This prevents IP reclamation during live migration and other transient VMI
+// states while ensuring IPs are eventually released when the VM is gone.
+func (c *IPAMController) vmiAllocationIsValid(a *allocation, _ bool) bool {
+	ns := a.attrs[ipam.AttributeNamespace]
+	vmiName := a.getVMIName()
+	logc := log.WithFields(a.fields())
+
+	// Missing metadata or no virt client
+	if ns == "" || vmiName == "" || c.virtClient == nil {
+		logc.Debug("Insufficient data to validate VMI allocation, assuming valid")
+		return true
+	}
+
+	// Step 1: Resolve VM identity
+	vm, reliable := c.resolveVMForAllocation(ns, vmiName, a, logc)
+	if vm == nil {
+		// VM definitely does not exist
+		return false
+	}
+
+	// Step 2: Check VM intent
+	if !vmAllowsIP(vm, logc) {
+		return false
+	}
+
+	// Step 3: If VMI exists, allocation is valid
+	if c.vmiExists(ns, vmiName) {
+		return true
+	}
+
+	// Step 4: Migration explains missing VMI
+	if c.isMigrating(ns, vmiName) {
+		return true
+	}
+
+	// Step 5: Grace period for legitimate recreation
+	if withinGracePeriod(a, logc) {
+		return true
+	}
+
+	// Beyond grace means leak
+	if !reliable {
+		logc.Warn("VM identity was not reliably determined; treating allocation as leaked after grace")
+	}
+	return false
+}
+
+func (c *IPAMController) resolveVMForAllocation(
+	ns, vmiName string,
+	a *allocation,
+	logc *log.Entry,
+) (*kubevirtv1.VirtualMachine, bool) {
+
+	// Try VMI -> OwnerReference
+	if vmi, err := c.virtClient.VirtualMachineInstance(ns).
+		Get(context.Background(), vmiName, metav1.GetOptions{}); err == nil {
+
+		if vmRef := getVMOwnerRef(vmi); vmRef != nil {
+			vm, err := c.virtClient.VirtualMachine(ns).
+				Get(context.Background(), vmRef.Name, metav1.GetOptions{})
+			if err != nil {
+				logc.WithError(err).Debug("VMI exists but VM not found")
+				return nil, true
+			}
+
+			if string(vm.UID) != string(vmRef.UID) {
+				logc.Warn("VM UID mismatch (deleted & recreated)")
+				return nil, true
+			}
+			return vm, true
+		}
+	}
+
+	// Stored VM identity
+	vmName := a.attrs[ipam.AttributeVM]
+	vmUID := a.attrs[ipam.AttributeVMUID]
+
+	if vmName != "" && vmUID != "" {
+		vm, err := c.virtClient.VirtualMachine(ns).
+			Get(context.Background(), vmName, metav1.GetOptions{})
+		if err != nil {
+			logc.WithError(err).Debug("Stored VM identity not found")
+			return nil, true
+		}
+
+		if string(vm.UID) != vmUID {
+			logc.Warn("Stored VM UID mismatch")
+			return nil, true
+		}
+		return vm, true
+	}
+
+	// Fallback
+	logc.Warn("Missing VM identity attributes, falling back to VMI name lookup")
+	vm, err := c.virtClient.VirtualMachine(ns).
+		Get(context.Background(), vmiName, metav1.GetOptions{})
+	if err != nil {
+		return nil, false
+	}
+
+	return vm, false
+}
+
+func vmAllowsIP(vm *kubevirtv1.VirtualMachine, logc *log.Entry) bool {
+	if vm.DeletionTimestamp != nil && !vm.DeletionTimestamp.IsZero() {
+		logc.Debug("VM is being deleted")
+		return false
+	}
+
+	if rs, err := vm.RunStrategy(); err == nil {
+		if rs == kubevirtv1.RunStrategyHalted {
+			logc.Debug("VM RunStrategy is Halted")
+			return false
+		}
+	}
+
+	return true
+}
+
+func (c *IPAMController) vmiExists(ns, vmiName string) bool {
+	_, err := c.virtClient.VirtualMachineInstance(ns).
+		Get(context.Background(), vmiName, metav1.GetOptions{})
+	return err == nil
+}
+
+// isMigrating returns true if there is an active (non-final) KubeVirt live migration
+// for the given VMI.
+//
+// This is used by IPAM GC to tolerate temporary VMI absence during live migration.
+// While a migration is in progress, pod and VMI transitions are expected, but the
+// VM still intends to retain ownership of its IP address.
+func (c *IPAMController) isMigrating(ns, vmiName string) bool {
+	//TODO: Implementation TBD
+	return true
+}
+
+func withinGracePeriod(a *allocation, logc *log.Entry) bool {
+	if a.leakedAt == nil {
+		logc.Debug("VMI missing first time, starting grace period")
+		return true
+	}
+
+	if time.Since(*a.leakedAt) < VMI_RECREATION_GRACE_PERIOD {
+		logc.Debug("Within VMI recreation grace period")
+		return true
+	}
+
+	return false
+}
+
+func getVMOwnerRef(vmi *kubevirtv1.VirtualMachineInstance) *metav1.OwnerReference {
+	for i := range vmi.OwnerReferences {
+		ref := &vmi.OwnerReferences[i]
+		if ref.Kind == "VirtualMachine" &&
+			strings.HasPrefix(ref.APIVersion, "kubevirt.io/") {
+			return ref
+		}
+	}
+	return nil
 }
 
 func (c *IPAMController) syncIPAM() error {

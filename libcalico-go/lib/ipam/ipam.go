@@ -50,6 +50,9 @@ const (
 	AttributePod             = model.IPAMBlockAttributePod
 	AttributeNamespace       = model.IPAMBlockAttributeNamespace
 	AttributeNode            = model.IPAMBlockAttributeNode
+	AttributeVMI             = model.IPAMBlockAttributeVMI
+	AttributeVM              = model.IPAMBlockAttributeVM
+	AttributeVMUID           = model.IPAMBlockAttributeVMUID
 	AttributeTimestamp       = model.IPAMBlockAttributeTimestamp
 	AttributeType            = model.IPAMBlockAttributeType
 	AttributeService         = model.IPAMBlockAttributeService
@@ -2089,9 +2092,9 @@ func (c ipamClient) GetIPAMConfig(ctx context.Context) (*IPAMConfig, error) {
 			kvp := &model.KVPair{
 				Key: model.IPAMConfigKey{},
 				Value: &model.IPAMConfig{
-					StrictAffinity:                false,
-					AutoAllocateBlocks:            true,
-					MaxBlocksPerHost:              0,
+					StrictAffinity:               false,
+					AutoAllocateBlocks:           true,
+					MaxBlocksPerHost:             0,
 					KubeVirtVMAddressPersistence: "Enabled", // Default: enabled for auto-detection
 				},
 			}
