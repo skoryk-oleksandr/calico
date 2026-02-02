@@ -168,6 +168,25 @@ func cmdAdd(args *skel.CmdArgs) error {
 		attrs[ipam.AttributePod] = epIDs.Pod
 		attrs[ipam.AttributeNamespace] = epIDs.Namespace
 	}
+	// Add VMI attributes if this is a virt-launcher pod
+	if vmiInfo != nil {
+		attrs["vmi"] = vmiInfo.GetName()
+
+		// Set migration role based on whether this is a migration target
+		if vmiInfo.IsMigrationTarget() {
+			attrs["migration-role"] = "target"
+			attrs["migration-job-uid"] = vmiInfo.GetVMIMigrationUID()
+			attrs[ipam.AttributeVMI] = vmiInfo.GetName()
+			attrs[ipam.AttributeVM] = vmiInfo.VMOwner.Name
+			attrs[ipam.AttributeVMUID] = string(vmiInfo.VMOwner.UID)
+
+			// Handle migration target: retrieve existing IP and set AlternateOwnerAttrs
+			return handleMigrationTarget(calicoClient, handleID, attrs, conf, logger)
+		} else {
+			// For source/active pods, use active role
+			attrs["migration-role"] = "active"
+		}
+	}
 
 	r := &cniv1.Result{}
 	if ipamArgs.IP != nil {
