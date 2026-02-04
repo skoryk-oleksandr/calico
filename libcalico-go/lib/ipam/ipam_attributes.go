@@ -97,7 +97,67 @@ func matchAttributeOwner(attrs map[string]string, expectedOwner *AttributeOwner)
 }
 
 // SetOwnerAttributes sets ActiveOwnerAttrs and/or AlternateOwnerAttrs for an IP atomically.
-func (c ipamClient) SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID string, attrsActiveOwner, attrsAlternateOwner map[string]string, expectedActiveOwner, expectedAlternateOwner *AttributeOwner) error {
+func (c ipamClient) SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID string, updates *OwnerAttributeUpdates, preconditions *OwnerAttributePreconditions) error {
+	if updates == nil {
+		return fmt.Errorf("updates cannot be nil")
+	}
+
+	// Validate that ClearActiveOwner and AttributesActiveOwner are not both set
+	if updates.ClearActiveOwner && updates.AttributesActiveOwner != nil {
+		return fmt.Errorf("cannot set both ClearActiveOwner=true and AttributesActiveOwner: these are mutually exclusive")
+	}
+
+	// Validate that ClearAlternateOwner and AttributesAlternateOwner are not both set
+	if updates.ClearAlternateOwner && updates.AttributesAlternateOwner != nil {
+		return fmt.Errorf("cannot set both ClearAlternateOwner=true and AttributesAlternateOwner: these are mutually exclusive")
+	}
+
+	var attrsActiveOwner, attrsAlternateOwner map[string]string
+	
+	// Determine what to set for ActiveOwnerAttrs
+	if updates.ClearActiveOwner {
+		// Clear flag - use empty map to signal clear
+		attrsActiveOwner = map[string]string{}
+	} else {
+		attrsActiveOwner = updates.AttributesActiveOwner
+	}
+	
+	// Determine what to set for AlternateOwnerAttrs
+	if updates.ClearAlternateOwner {
+		// Clear flag - use empty map to signal clear
+		attrsAlternateOwner = map[string]string{}
+	} else {
+		attrsAlternateOwner = updates.AttributesAlternateOwner
+	}
+
+	var expectedActiveOwner, expectedAlternateOwner *AttributeOwner
+
+	if preconditions != nil {
+		// Validate that ExpectedActiveOwner and VerifyActiveOwnerEmpty are not both set
+		if preconditions.ExpectedActiveOwner != nil && preconditions.VerifyActiveOwnerEmpty {
+			return fmt.Errorf("cannot set both ExpectedActiveOwner and VerifyActiveOwnerEmpty: these are mutually exclusive")
+		}
+
+		// Validate that ExpectedAlternateOwner and VerifyAlternateOwnerEmpty are not both set
+		if preconditions.ExpectedAlternateOwner != nil && preconditions.VerifyAlternateOwnerEmpty {
+			return fmt.Errorf("cannot set both ExpectedAlternateOwner and VerifyAlternateOwnerEmpty: these are mutually exclusive")
+		}
+
+		// If VerifyActiveOwnerEmpty is set, use GetEmptyAttributeOwner() to represent empty verification
+		if preconditions.VerifyActiveOwnerEmpty {
+			expectedActiveOwner = GetEmptyAttributeOwner()
+		} else {
+			expectedActiveOwner = preconditions.ExpectedActiveOwner
+		}
+
+		// If VerifyAlternateOwnerEmpty is set, use GetEmptyAttributeOwner() to represent empty verification
+		if preconditions.VerifyAlternateOwnerEmpty {
+			expectedAlternateOwner = GetEmptyAttributeOwner()
+		} else {
+			expectedAlternateOwner = preconditions.ExpectedAlternateOwner
+		}
+	}
+
 	logCtx := log.WithFields(log.Fields{
 		"ip":                     ip,
 		"handleID":               handleID,

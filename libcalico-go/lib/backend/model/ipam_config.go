@@ -57,5 +57,5 @@ type IPAMConfig struct {
 	// KubeVirtVMAddressPersistence controls whether KubeVirt VirtualMachine workloads
 	// maintain persistent IP addresses across VM lifecycle events (reboot, migration, pod eviction).
 	// Valid values: "Enabled", "Disabled". Default: "Enabled" if not specified.
-	KubeVirtVMAddressPersistence string `json:"kubeVirtVMAddressPersistence,omitempty"`
+	KubeVirtVMAddressPersistence *string `json:"kubeVirtVMAddressPersistence,omitempty"`
 }

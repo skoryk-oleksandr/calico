@@ -199,6 +199,19 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 		// Set migration role based on whether this is a migration target
 		if vmiInfo.IsMigrationTarget() {
+			// Check if VM address persistence is disabled
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			ipamConfig, err := calicoClient.IPAM().GetIPAMConfig(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to get IPAM config: %w", err)
+			}
+			// If persistence is explicitly disabled, migration targets are not allowed
+			if ipamConfig.KubeVirtVMAddressPersistence != nil &&
+				*ipamConfig.KubeVirtVMAddressPersistence == ipam.VMAddressPersistenceDisabled {
+				return fmt.Errorf("live migration target pod is not allowed when KubeVirtVMAddressPersistence is disabled")
+			}
+
 			attrs["migration-role"] = "target"
 			attrs["migration-job-uid"] = vmiInfo.GetVMIMigrationUID()
 			attrs[ipam.AttributeVMI] = vmiInfo.GetName()
@@ -679,21 +692,30 @@ func cmdDel(args *skel.CmdArgs) error {
 			// Try to clear both Active and Alternate attributes for safety
 			// We don't know which one contains this pod's data, but we verify ownership
 			// by passing expectedOwner to ensure we only clear attributes belonging to this pod
-			emptyMap := map[string]string{} // Empty map means clear the attribute
 			for _, ip := range ips {
 				logger.WithField("ip", ip).Info("Attempting to clear pod attributes")
 
 				// Try to clear ActiveOwnerAttrs first, verifying it matches this pod
-				// Pass empty map to clear, and expectedOwner to verify
-				if err := calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, emptyMap, nil, expectedOwner, nil); err != nil {
+				updates := &ipam.OwnerAttributeUpdates{
+					ClearActiveOwner: true,
+				}
+				preconditions := &ipam.OwnerAttributePreconditions{
+					ExpectedActiveOwner: expectedOwner,
+				}
+				if err := calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, updates, preconditions); err != nil {
 					logger.WithError(err).WithField("ip", ip).Debug("Failed to clear ActiveOwnerAttrs (may not match or not exist)")
 				} else {
 					logger.WithField("ip", ip).Info("Successfully cleared ActiveOwnerAttrs")
 				}
 
 				// Also try to clear AlternateOwnerAttrs, verifying it matches this pod
-				// Pass empty map to clear, and expectedOwner to verify
-				if err := calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, nil, emptyMap, nil, expectedOwner); err != nil {
+				updatesAlt := &ipam.OwnerAttributeUpdates{
+					ClearAlternateOwner: true,
+				}
+				preconditionsAlt := &ipam.OwnerAttributePreconditions{
+					ExpectedAlternateOwner: expectedOwner,
+				}
+				if err := calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, updatesAlt, preconditionsAlt); err != nil {
 					logger.WithError(err).WithField("ip", ip).Debug("Failed to clear AlternateOwnerAttrs (may not match or not exist)")
 				} else {
 					logger.WithField("ip", ip).Info("Successfully cleared AlternateOwnerAttrs")
@@ -797,7 +819,13 @@ func handleMigrationTarget(calicoClient client.Interface, handleID string, attrs
 		logger.WithField("ip", existingIP.IP).Info("Setting AlternateOwnerAttrs for IP")
 
 		// Set AlternateOwnerAttrs only (don't modify ActiveOwnerAttrs), verifying it matches expectedAlternateOwner if it already exists
-		err = calicoClient.IPAM().SetOwnerAttributes(ctx, existingIP, handleID, nil, attrs, nil, expectedAlternateOwner)
+		updates := &ipam.OwnerAttributeUpdates{
+			AttributesAlternateOwner: attrs,
+		}
+		preconditions := &ipam.OwnerAttributePreconditions{
+			ExpectedAlternateOwner: expectedAlternateOwner,
+		}
+		err = calicoClient.IPAM().SetOwnerAttributes(ctx, existingIP, handleID, updates, preconditions)
 		if err != nil {
 			logger.WithError(err).WithField("ip", existingIP.IP).Error("Failed to set AlternateOwnerAttrs")
 			return fmt.Errorf("failed to set AlternateOwnerAttrs for IP %s: %w", existingIP.IP, err)

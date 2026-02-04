@@ -62,7 +62,7 @@ type IPAMConfigSpec struct {
 	// Default: "Enabled"
 	// +kubebuilder:validation:Enum=Enabled;Disabled
 	// +optional
-	KubeVirtVMAddressPersistence string `json:"kubeVirtVMAddressPersistence,omitempty"`
+	KubeVirtVMAddressPersistence *string `json:"kubeVirtVMAddressPersistence,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

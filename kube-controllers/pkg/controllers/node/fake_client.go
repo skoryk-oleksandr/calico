@@ -317,7 +317,7 @@ func (f *fakeIPAMClient) GetAssignmentAttributes(ctx context.Context, addr cnet.
 }
 
 // SetOwnerAttributes sets ActiveOwnerAttrs and/or AlternateOwnerAttrs for an IP atomically.
-func (f *fakeIPAMClient) SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID string, attrsActiveOwner, attrsAlternateOwner map[string]string, expectedActiveOwner, expectedAlternateOwner *ipam.AttributeOwner) error {
+func (f *fakeIPAMClient) SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID string, updates *ipam.OwnerAttributeUpdates, preconditions *ipam.OwnerAttributePreconditions) error {
 	panic("not implemented") // TODO: Implement
 }
 

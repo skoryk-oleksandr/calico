@@ -112,33 +112,16 @@ type Interface interface {
 	UpgradeHost(ctx context.Context, nodeName string) error
 
 	// SetOwnerAttributes sets ActiveOwnerAttrs and/or AlternateOwnerAttrs for an IP atomically.
-	// This is used for VMI live migration scenarios to manage pod ownership attributes.
 	//
 	// Parameters:
-	//   - attrsActiveOwner: Attributes to set for ActiveOwnerAttrs.
-	//     If nil, ActiveOwnerAttrs is not modified.
-	//     If an empty map (map[string]string{}), ActiveOwnerAttrs is cleared (set to nil).
-	//
-	//   - attrsAlternateOwner: Attributes to set for AlternateOwnerAttrs.
-	//     If nil, AlternateOwnerAttrs is not modified.
-	//     If an empty map (map[string]string{}), AlternateOwnerAttrs is cleared (set to nil).
-	//
-	//   - expectedActiveOwner:
-	//     If non-nil, verifies current ActiveOwnerAttrs matches before setting.
-	//        Prevents overwriting attributes that belong to a different pod.
-	//     If an AttributeOwner with empty namespace and name is passed,
-	//        verifies that ActiveOwnerAttrs is empty (nil or empty map) before setting.
-	//
-	//  - expectedAlternateOwner:
-	//     If non-nil, verifies current AlternateOwnerAttrs matches before setting.
-	//        Prevents overwriting attributes that belong to a different pod.
-	//     If an AttributeOwner with empty namespace and name is passed,
-	//        verifies that AlternateOwnerAttrs is empty (nil or empty map) before setting.
+	//   - updates: Specifies the attribute values to set. See OwnerAttributeUpdates for details.
+	//   - preconditions: Optional verification of expected owners before setting attributes.
+	//     If nil, no verification is performed.
 	//
 	// Use cases:
-	//   - Set AlternateOwnerAttrs only: attrsActiveOwner=nil, attrsAlternateOwner=<target pod attrs>
-	//   - Clear ActiveOwnerAttrs: attrsActiveOwner=map[string]string{}, attrsAlternateOwner=nil
-	//   - Swap attributes: attrsActiveOwner=<current alternate>, attrsAlternateOwner=<current active>
-	//   - Set both: attrsActiveOwner=<new active>, attrsAlternateOwner=<new alternate>
-	SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID string, attrsActiveOwner, attrsAlternateOwner map[string]string, expectedActiveOwner, expectedAlternateOwner *AttributeOwner) error
+	//   - Set AlternateOwnerAttrs only: updates.AttributesAlternateOwner=<target pod attrs>
+	//   - Clear ActiveOwnerAttrs: updates.ClearActiveOwner=true
+	//   - Swap attributes: updates.AttributesActiveOwner=<current alternate>, updates.AttributesAlternateOwner=<current active>
+	//   - Set both: updates.AttributesActiveOwner=<new active>, updates.AttributesAlternateOwner=<new alternate>
+	SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID string, updates *OwnerAttributeUpdates, preconditions *OwnerAttributePreconditions) error
 }

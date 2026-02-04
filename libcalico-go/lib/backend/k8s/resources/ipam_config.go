@@ -71,9 +71,10 @@ func (c ipamConfigClient) toV1(kvpv3 *model.KVPair) (*model.KVPair, error) {
 	return &model.KVPair{
 		Key: model.IPAMConfigKey{},
 		Value: &model.IPAMConfig{
-			StrictAffinity:     v3obj.Spec.StrictAffinity,
-			AutoAllocateBlocks: v3obj.Spec.AutoAllocateBlocks,
-			MaxBlocksPerHost:   v3obj.Spec.MaxBlocksPerHost,
+			StrictAffinity:                v3obj.Spec.StrictAffinity,
+			AutoAllocateBlocks:            v3obj.Spec.AutoAllocateBlocks,
+			MaxBlocksPerHost:              v3obj.Spec.MaxBlocksPerHost,
+			KubeVirtVMAddressPersistence: v3obj.Spec.KubeVirtVMAddressPersistence,
 		},
 		Revision: kvpv3.Revision,
 		UID:      &kvpv3.Value.(*libapiv3.IPAMConfig).UID,
@@ -102,9 +103,10 @@ func (c ipamConfigClient) toV3(kvpv1 *model.KVPair) *model.KVPair {
 			},
 			ObjectMeta: m,
 			Spec: libapiv3.IPAMConfigSpec{
-				StrictAffinity:     v1obj.StrictAffinity,
-				AutoAllocateBlocks: v1obj.AutoAllocateBlocks,
-				MaxBlocksPerHost:   v1obj.MaxBlocksPerHost,
+				StrictAffinity:                v1obj.StrictAffinity,
+				AutoAllocateBlocks:            v1obj.AutoAllocateBlocks,
+				MaxBlocksPerHost:              v1obj.MaxBlocksPerHost,
+				KubeVirtVMAddressPersistence: v1obj.KubeVirtVMAddressPersistence,
 			},
 		},
 		Revision: kvpv1.Revision,
