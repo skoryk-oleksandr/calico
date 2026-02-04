@@ -92,7 +92,7 @@ func NewNodeController(ctx context.Context,
 	cfg config.NodeControllerConfig,
 	nodeInformer, podInformer cache.SharedIndexInformer,
 	dataFeed *utils.DataFeed,
-	restConfig *rest.Config,
+	kubevirtClient *kubevirt.VirtClientInterface,
 ) controller.Controller {
 	nc := &NodeController{
 		ctx:          ctx,
@@ -108,11 +108,8 @@ func NewNodeController(ctx context.Context,
 	nodeDeletionFuncs := []func(*v1.Node){}
 	podDeletionFuncs := []func(*v1.Pod){}
 
-	// Try to create a KubeVirt client for VMI validation (optional, can be nil)
-	virtClient := tryCreateVirtClient(restConfig)
-
 	// Create the IPAM controller.
-	nc.ipamCtrl = NewIPAMController(cfg, calicoClient, k8sClientset, podInformer.GetIndexer(), nodeInformer.GetIndexer(), virtClient)
+	nc.ipamCtrl = NewIPAMController(cfg, calicoClient, k8sClientset, podInformer.GetIndexer(), nodeInformer.GetIndexer(), *kubevirtClient)
 	nc.ipamCtrl.RegisterWith(nc.dataFeed)
 	nodeDeletionFuncs = append(nodeDeletionFuncs, nc.ipamCtrl.OnKubernetesNodeDeleted)
 	podDeletionFuncs = append(podDeletionFuncs, nc.ipamCtrl.OnKubernetesPodDeleted)

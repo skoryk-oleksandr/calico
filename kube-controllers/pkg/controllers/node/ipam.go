@@ -1100,20 +1100,16 @@ func (c *IPAMController) vmiAllocationIsValid(a *allocation, _ bool) bool {
 	}
 
 	// Step 3: VMI execution exists and matches UID => valid
-	exists, sameExec, err := c.vmiExistsAndMatchesUID(ns, vmiName, vmiUID)
+	vmi, err := c.getVmiByNameAndGuid(ns, vmiName, vmiUID)
 	if err != nil {
 		logc.WithError(err).Warn("Failed to check VMI existence; assuming valid")
 		return true
 	}
 
-	if exists {
-		if sameExec {
-			return true
-		}
-
-		// exists == true && sameExec == false
-		logc.Warn("VMI exists with same name but different UID; treating allocation as leaked")
-		return false
+	if vmi != nil {
+		// VMI exists with matching UID
+		logc.Debug("VMI exists with matching UID; allocation is valid")
+		return true
 	}
 
 	// Step 4: VMI missing - migration may explain transient absence
@@ -1130,24 +1126,31 @@ func (c *IPAMController) vmiAllocationIsValid(a *allocation, _ bool) bool {
 	return false
 }
 
-// vmiExistsAndMatchesUID returns:
-// - exists: whether a VMI with this name currently exists
-// - sameExec: Is the currently running VMI the same execution that originally claimed this IP (compare by VMI GUID)
-func (c *IPAMController) vmiExistsAndMatchesUID(ns, vmiName, expectedUID string) (exists bool, sameExec bool, err error) {
+// getVmiByNameAndGuid returns the VirtualMachineInstance only if a VMI with the
+// given name exists, is not being deleted, and its UID matches the expected
+// execution UID.
+//
+// A nil VMI (with nil error) indicates that the VMI either no longer exists or
+// represents a different execution and therefore does not own the IP.
+func (c *IPAMController) getVmiByNameAndGuid(ns, vmiName, expectedUID string) (*kubevirtv1.VirtualMachineInstance, error) {
 	vmi, err := c.virtClient.VirtualMachineInstance(ns).
 		Get(context.Background(), vmiName, metav1.GetOptions{})
 	if err != nil {
 		// Not found or other error; caller decides policy.
-		return false, false, err
+		return nil, err
 	}
 
 	// If the VMI is already deleting, treat as not existing for ownership purposes.
 	// (Execution is ending; let grace/migration logic handle transitions.)
 	if vmi.DeletionTimestamp != nil && !vmi.DeletionTimestamp.IsZero() {
-		return false, false, nil
+		return nil, nil
 	}
 
-	return true, string(vmi.UID) == expectedUID, nil
+	if string(vmi.UID) == expectedUID {
+		return vmi, nil
+	}
+
+	return nil, nil
 }
 
 func (c *IPAMController) resolveVMForAllocation(
