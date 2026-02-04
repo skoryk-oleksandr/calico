@@ -116,12 +116,19 @@ require (
 	k8s.io/kube-openapi v0.0.0-20250710124328-f3f2b991d03b
 	k8s.io/kubernetes v1.34.3
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
+	kubevirt.io/api v1.7.0
 	modernc.org/memory v1.11.0
 	sigs.k8s.io/controller-runtime v0.22.3
 	sigs.k8s.io/kind v0.30.0
 	sigs.k8s.io/knftables v0.0.19
 	sigs.k8s.io/network-policy-api v0.1.8-0.20251216172012-399040aaf83d
 	sigs.k8s.io/yaml v1.6.0
+)
+
+require (
+	github.com/openshift/custom-resource-status v1.1.2 // indirect
+	kubevirt.io/containerized-data-importer-api v1.63.1 // indirect
+	kubevirt.io/controller-lifecycle-operator-sdk/api v0.0.0-20220329064328-f3cc58c6ed90 // indirect
 )
 
 require (
