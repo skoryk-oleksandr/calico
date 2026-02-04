@@ -33,6 +33,7 @@ import (
 	v1lister "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 
 	"github.com/projectcalico/calico/kube-controllers/pkg/config"
 	"github.com/projectcalico/calico/kube-controllers/pkg/controllers/flannelmigration"
@@ -44,6 +45,7 @@ import (
 	client "github.com/projectcalico/calico/libcalico-go/lib/clientv3"
 	cerrors "github.com/projectcalico/calico/libcalico-go/lib/errors"
 	"github.com/projectcalico/calico/libcalico-go/lib/ipam"
+	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 	cnet "github.com/projectcalico/calico/libcalico-go/lib/net"
 	"github.com/projectcalico/calico/libcalico-go/lib/options"
 )
@@ -71,6 +73,11 @@ const (
 
 	// key for ratelimited sync retries.
 	retryKey = "ipamSyncRetry"
+
+	// VMI_RECREATION_GRACE_PERIOD is the time window to allow VMI recreation after VM state changes.
+	// During this period, if a VMI doesn't exist but the VM exists and should be running,
+	// we assume the VMI is being recreated (e.g., during live migration, restart, etc.)
+	VMI_RECREATION_GRACE_PERIOD = 5 * time.Minute
 )
 
 func init() {
@@ -117,7 +124,7 @@ type rateLimiterItemKey struct {
 	Name string
 }
 
-func NewIPAMController(cfg config.NodeControllerConfig, c client.Interface, cs kubernetes.Interface, pi, ni cache.Indexer) *IPAMController {
+func NewIPAMController(cfg config.NodeControllerConfig, c client.Interface, cs kubernetes.Interface, pi, ni cache.Indexer, virtClient kubevirt.VirtClientInterface) *IPAMController {
 	var leakGracePeriod *time.Duration
 	if cfg.LeakGracePeriod != nil {
 		leakGracePeriod = &cfg.LeakGracePeriod.Duration
@@ -146,9 +153,10 @@ func NewIPAMController(cfg config.NodeControllerConfig, c client.Interface, cs k
 	)
 
 	return &IPAMController{
-		client:    c,
-		clientset: cs,
-		config:    cfg,
+		client:     c,
+		clientset:  cs,
+		config:     cfg,
+		virtClient: virtClient,
 
 		syncChan: syncChan,
 
@@ -191,6 +199,9 @@ type IPAMController struct {
 	podLister  v1lister.PodLister
 	nodeLister v1lister.NodeLister
 	config     config.NodeControllerConfig
+
+	// virtClient is an optional KubeVirt client for verifying VMI/VM resources.
+	virtClient kubevirt.VirtClientInterface
 
 	syncStatus bapi.SyncStatus
 
@@ -1275,51 +1286,6 @@ func getVMOwnerRef(vmi *kubevirtv1.VirtualMachineInstance) *metav1.OwnerReferenc
 		}
 	}
 	return nil
-}
-
-// isMigrating returns true if there is an active (non-final) KubeVirt live migration
-// for the given VMI.
-//
-// This is used by IPAM GC to tolerate temporary VMI absence during live migration.
-// While a migration is in progress, pod and VMI transitions are expected, but the
-// VM still intends to retain ownership of its IP address.
-func (c *IPAMController) isMigrating(ns, vmiName string) bool {
-	if c.virtClient == nil {
-		// If we cannot determine migration state, be conservative and
-		// assume not migrating.
-		return false
-	}
-
-	ctx := context.Background()
-
-	migrations, err := c.virtClient.
-		VirtualMachineInstanceMigration(ns).
-		List(ctx, metav1.ListOptions{})
-	if err != nil {
-		// On error, be conservative: do NOT assume migration,
-		// otherwise we could leak IPs forever.
-		log.WithError(err).
-			WithFields(map[string]interface{}{
-				"namespace": ns,
-				"vmi":       vmiName,
-			}).
-			Warn("Failed to list VMI migrations")
-		return false
-	}
-
-	for _, mig := range migrations.Items {
-		if mig.Spec.VMIName != vmiName {
-			continue
-		}
-
-		// Migration is active unless it is in a final phase
-		if mig.Status.Phase != kubevirtv1.MigrationSucceeded &&
-			mig.Status.Phase != kubevirtv1.MigrationFailed {
-			return true
-		}
-	}
-
-	return false
 }
 
 func (c *IPAMController) syncIPAM() error {

@@ -35,4 +35,4 @@ pod2daemon/node-driver-registrar/
 /networking-calico/upper-constraints*.txt
 
 /* Created by libcalico-go UTs */
-ut-tmp-dir
+ut-tmp-dir*.test
