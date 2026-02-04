@@ -46,6 +46,11 @@ type AssignIPArgs struct {
 
 	// The intended use for the IP address.  Used to determine the affinityType of the host.
 	IntendedUse v3.IPPoolAllowedUse
+
+	// MaxAllocPerIPVersion specifies the maximum number of IPs per IP version (IPv4/IPv6)
+	// that can be allocated for this handle. If 0, no limit is enforced.
+	// Used for KubeVirt VMI pods to ensure only one IP allocation per VMI per IP version.
+	MaxAllocPerIPVersion int
 }
 
 // AutoAssignArgs defines the set of arguments for assigning one or more
@@ -91,6 +96,11 @@ type AutoAssignArgs struct {
 	// This field is required.
 	IntendedUse v3.IPPoolAllowedUse
 
+	// MaxAllocPerIPVersion specifies the maximum number of IPs per IP version (IPv4/IPv6)
+	// that can be allocated across all blocks for this handle. If 0, no limit is enforced.
+	// Used for KubeVirt VMI pods to ensure only one IP allocation per VMI per IP version.
+	MaxAllocPerIPVersion int
+
 	// The namespace object for namespaceSelector support.
 	Namespace *corev1.Namespace
 }
@@ -112,6 +122,18 @@ type IPAMConfig struct {
 	// If non-zero, MaxBlocksPerHost specifies the max number of blocks that may
 	// be affine to a node.
 	MaxBlocksPerHost int
+
+	// KubeVirtVMAddressPersistence controls whether KubeVirt VirtualMachine workloads
+	// maintain persistent IP addresses across VM lifecycle events.
+	// When set to "Enabled", Calico automatically ensures that KubeVirt VMs retain their
+	// IP addresses when their underlying pods are recreated during VM operations such as
+	// reboot, live migration, or pod eviction. IP persistency is ensured when the
+	// VirtualMachineInstance (VMI) resource is deleted and recreated by the VM controller.
+	// When set to "Disabled", VMs receive new IP addresses whenever their pods are recreated,
+	// following standard pod IP allocation behavior.
+	// Valid values: "Enabled", "Disabled"
+	// Default: "Enabled" (IP persistence enabled if not specified)
+	KubeVirtVMAddressPersistence string
 }
 
 // GetUtilizationArgs defines the set of arguments for requesting IP utilization.
@@ -210,4 +232,23 @@ func (opts *ReleaseOptions) AsNetIP() (*cnet.IP, error) {
 		return ip, nil
 	}
 	return nil, fmt.Errorf("failed to parse IP: %s", opts.Address)
+}
+
+// OwnerAttributeType specifies which owner attribute to operate on.
+type OwnerAttributeType string
+
+const (
+	// OwnerAttributeTypeActive refers to ActiveOwnerAttrs (current/primary owner).
+	OwnerAttributeTypeActive OwnerAttributeType = "active"
+
+	// OwnerAttributeTypeAlternate refers to AlternateOwnerAttrs (secondary owner during migration).
+	OwnerAttributeTypeAlternate OwnerAttributeType = "alternate"
+)
+
+// AttributeOwner represents the owner of an IP allocation attribute.
+type AttributeOwner struct {
+	// Namespace is the Kubernetes namespace of the pod.
+	Namespace string
+	// Name is the name of the pod.
+	Name string
 }

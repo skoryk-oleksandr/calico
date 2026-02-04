@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2024 Tigera, Inc. All rights reserved.
+// Copyright (c) 2016-2026 Tigera, Inc. All rights reserved.
 
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,6 +33,9 @@ const (
 	IPAMBlockAttributePod             = "pod"
 	IPAMBlockAttributeNamespace       = "namespace"
 	IPAMBlockAttributeNode            = "node"
+	IPAMBlockAttributeVMI             = "vmi"
+	IPAMBlockAttributeVM              = "vm"    // VM name for KubeVirt allocations
+	IPAMBlockAttributeVMUID           = "vmuid" // VM UID for KubeVirt allocations
 	IPAMBlockAttributeType            = "type"
 	IPAMBlockAttributeService         = "service"
 	IPAMBlockAttributeTypeIPIP        = "ipipTunnelAddress"
@@ -218,7 +221,7 @@ func (b *AllocationBlock) NonAffineAllocations() []Allocation {
 			continue
 		}
 		attrs := b.Attributes[*attrIdx]
-		host := attrs.AttrSecondary[IPAMBlockAttributeNode]
+		host := attrs.ActiveOwnerAttrs[IPAMBlockAttributeNode]
 		if myHost != "" && host == myHost {
 			continue // Skip allocations that are affine to this block.
 		}
@@ -255,6 +258,11 @@ func (b *AllocationBlock) OrdinalToIP(ord int) net.IP {
 }
 
 type AllocationAttribute struct {
-	AttrPrimary   *string           `json:"handle_id"`
-	AttrSecondary map[string]string `json:"secondary"`
+	// HandleID is the primary identifier for the allocation.
+	HandleID *string `json:"handle_id,omitempty"`
+	// ActiveOwnerAttrs contains attributes of the active owner (the pod currently using the IP).
+	ActiveOwnerAttrs map[string]string `json:"secondary,omitempty"`
+	// AlternateOwnerAttrs contains attributes of the previous or potential owner
+	// (used during live migration to track the source or target pod).
+	AlternateOwnerAttrs map[string]string `json:"alternate,omitempty"`
 }
