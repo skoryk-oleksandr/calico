@@ -528,17 +528,20 @@ func acquireIPAMLockBestEffort(path string) unlockFn {
 }
 
 // createVMIHandleID creates a handle ID for a KubeVirt VMI pod based on namespace and VMI name.
-// The handle ID format is: <networkName>.vmi:<hash>
+// The handle ID format is: <networkName>.vmi<suffix> or <networkName>.vmi_<hash> if suffix is too long
 // This ensures IP persistence across VMI pod recreations and live migrations since
 // the VMI name and namespace remain stable (VM and VMI share the same name).
+// Uses GetLengthLimitedID to keep the namespace/name unhashed if short enough, otherwise hashes it.
 func createVMIHandleID(confName string, vmiInfo *kubevirt.PodVMIInfo) string {
-	// Create content from namespace and VMI name
-	content := fmt.Sprintf("%s/%s", vmiInfo.GetNamespace(), vmiInfo.GetName())
+	// Create suffix from namespace and VMI name
+	suffix := fmt.Sprintf("%s/%s", vmiInfo.GetNamespace(), vmiInfo.GetName())
 
-	uniqueID := hash.MakeUniqueID("vmi", content)
+	// Build prefix: networkName.vmi
+	prefix := fmt.Sprintf("%s.vmi", confName)
 
-	// Return in format: networkName.vmi:<hash>
-	return fmt.Sprintf("%s.%s", confName, uniqueID)
+	// Use GetLengthLimitedID with max length 128
+	// This will keep the suffix unhashed if it fits, otherwise hash and truncate
+	return hash.GetLengthLimitedID(prefix, suffix, 128)
 }
 
 // getVMIInfoForPod retrieves KubeVirt VirtualMachineInstance (VMI) information for a given pod.
