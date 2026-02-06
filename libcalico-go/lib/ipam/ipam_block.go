@@ -645,7 +645,7 @@ func (b *allocationBlock) setOwnerAttributes(ip cnet.IP, handleID string, attrsA
 	if attrsActiveOwner != nil {
 		// If expectedActiveOwner is provided, verify current ActiveOwnerAttrs matches.
 		if expectedActiveOwner != nil {
-			if !matchAttributeOwner(attr.ActiveOwnerAttrs, expectedActiveOwner) {
+			if !MatchAttributeOwner(attr.ActiveOwnerAttrs, expectedActiveOwner) {
 				// Build error message with current values for better debugging
 				currentPod := ""
 				currentNamespace := ""
@@ -671,7 +671,7 @@ func (b *allocationBlock) setOwnerAttributes(ip cnet.IP, handleID string, attrsA
 	if attrsAlternateOwner != nil {
 		// If expectedAlternateOwner is provided, verify current AlternateOwnerAttrs matches.
 		if expectedAlternateOwner != nil {
-			if !matchAttributeOwner(attr.AlternateOwnerAttrs, expectedAlternateOwner) {
+			if !MatchAttributeOwner(attr.AlternateOwnerAttrs, expectedAlternateOwner) {
 				// Build error message with current values for better debugging
 				currentPod := ""
 				currentNamespace := ""

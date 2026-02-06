@@ -653,9 +653,9 @@ func cmdDel(args *skel.CmdArgs) error {
 	unlock := acquireIPAMLockBestEffort(conf.IPAMLockFile)
 	defer unlock()
 
-	// For VMI pods, handle deletion based on VMI status
+	// For VMI pods, handle deletion based on VM status
 	if vmiInfo != nil {
-		// Check deletion status from embedded VMIResource
+		// Check deletion status
 		if vmiInfo.IsVMObjectDeletionInProgress() {
 			// VMI is being deleted - release the IP completely
 			logger.Info("VMI deletion in progress - releasing IP by handle")
@@ -669,7 +669,7 @@ func cmdDel(args *skel.CmdArgs) error {
 				logger.Info("Released address using handleID")
 			}
 		} else {
-			// VMI still exists - pod is being recreated or migration is happening
+			// VM object still exists - pod is being recreated or migration is happening
 			// Clear pod-specific attributes from IPAM block without releasing IP
 			logger.Info("VMI still exists - clearing attributes without releasing IP")
 
@@ -686,36 +686,58 @@ func cmdDel(args *skel.CmdArgs) error {
 				Name:      epIDs.Pod,
 			}
 
-			// Try to clear both Active and Alternate attributes for safety
-			// We don't know which one contains this pod's data, but we verify ownership
-			// by passing expectedOwner to ensure we only clear attributes belonging to this pod
+			// Get current attributes and clear only the one that matches this pod
 			for _, ip := range ips {
 				logger.WithField("ip", ip).Info("Attempting to clear pod attributes")
 
-				// Try to clear ActiveOwnerAttrs first, verifying it matches this pod
-				updates := &ipam.OwnerAttributeUpdates{
-					ClearActiveOwner: true,
-				}
-				preconditions := &ipam.OwnerAttributePreconditions{
-					ExpectedActiveOwner: expectedOwner,
-				}
-				if err := calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, updates, preconditions); err != nil {
-					logger.WithError(err).WithField("ip", ip).Debug("Failed to clear ActiveOwnerAttrs (may not match or not exist)")
-				} else {
-					logger.WithField("ip", ip).Info("Successfully cleared ActiveOwnerAttrs")
+				// Get current ActiveOwnerAttrs and AlternateOwnerAttrs
+				activeAttrs, alternateAttrs, _, err := calicoClient.IPAM().GetAssignmentAttributes(ctx, ip)
+				if err != nil {
+					logger.WithError(err).WithField("ip", ip).Warn("Failed to get assignment attributes, skipping attribute cleanup")
+					continue
 				}
 
-				// Also try to clear AlternateOwnerAttrs, verifying it matches this pod
-				updatesAlt := &ipam.OwnerAttributeUpdates{
-					ClearAlternateOwner: true,
-				}
-				preconditionsAlt := &ipam.OwnerAttributePreconditions{
-					ExpectedAlternateOwner: expectedOwner,
-				}
-				if err := calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, updatesAlt, preconditionsAlt); err != nil {
-					logger.WithError(err).WithField("ip", ip).Debug("Failed to clear AlternateOwnerAttrs (may not match or not exist)")
+				// Check which attribute owner matches this pod using MatchAttributeOwner
+				activeMatches := ipam.MatchAttributeOwner(activeAttrs, expectedOwner)
+				alternateMatches := ipam.MatchAttributeOwner(alternateAttrs, expectedOwner)
+
+				// Prepare updates and preconditions based on which owner type matches
+				var updates *ipam.OwnerAttributeUpdates
+				var preconditions *ipam.OwnerAttributePreconditions
+				var ownerType string
+
+				if activeMatches {
+					ownerType = "ActiveOwnerAttrs"
+					updates = &ipam.OwnerAttributeUpdates{
+						ClearActiveOwner: true,
+					}
+					preconditions = &ipam.OwnerAttributePreconditions{
+						ExpectedActiveOwner: expectedOwner,
+					}
+				} else if alternateMatches {
+					ownerType = "AlternateOwnerAttrs"
+					updates = &ipam.OwnerAttributeUpdates{
+						ClearAlternateOwner: true,
+					}
+					preconditions = &ipam.OwnerAttributePreconditions{
+						ExpectedAlternateOwner: expectedOwner,
+					}
 				} else {
-					logger.WithField("ip", ip).Info("Successfully cleared AlternateOwnerAttrs")
+					logger.WithField("ip", ip).Debug("No matching attributes found for this pod, nothing to clear")
+					continue
+				}
+
+				// Clear the matching owner attributes
+				if err := calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, updates, preconditions); err != nil {
+					logger.WithError(err).WithFields(logrus.Fields{
+						"ip":        ip,
+						"ownerType": ownerType,
+					}).Warn("Failed to clear owner attributes")
+				} else {
+					logger.WithFields(logrus.Fields{
+						"ip":        ip,
+						"ownerType": ownerType,
+					}).Info("Successfully cleared owner attributes")
 				}
 			}
 
