@@ -456,6 +456,16 @@ func cmdAdd(args *skel.CmdArgs) error {
 		logger.WithFields(logrus.Fields{"result.IPs": r.IPs}).Debug("IPAM Result")
 	}
 
+	// Set routes in the result - one route per IP for normal pods
+	// Note: For migration target pods, handleMigrationTarget() returns early with empty routes,
+	// so we only reach here for normal pods
+	for _, ipConfig := range r.IPs {
+		r.Routes = append(r.Routes, &cnitypes.Route{
+			Dst: ipConfig.Address,
+		})
+	}
+	logger.WithField("routes", r.Routes).Debug("Added routes to result")
+
 	// Print result to stdout, in the format defined by the requested cniVersion.
 	return cnitypes.PrintResult(r, conf.CNIVersion)
 }
@@ -880,6 +890,11 @@ func handleMigrationTarget(calicoClient client.Interface, handleID string, attrs
 			logger.WithField("ipv4", existingIP.IP).Info("Added IPv4 to result")
 		}
 	}
+
+	// Migration target: return empty routes to skip route programming
+	// The source pod keeps the route until migration completes, then Felix updates it
+	r.Routes = []*cnitypes.Route{}
+	logger.Info("Migration target pod: returning empty routes to skip route programming")
 
 	return cnitypes.PrintResult(r, conf.CNIVersion)
 }
