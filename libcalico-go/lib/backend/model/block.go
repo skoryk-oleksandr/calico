@@ -33,9 +33,9 @@ const (
 	IPAMBlockAttributePod             = "pod"
 	IPAMBlockAttributeNamespace       = "namespace"
 	IPAMBlockAttributeNode            = "node"
-	IPAMBlockAttributeVMI             = "vmi"
-	IPAMBlockAttributeVM              = "vm"    // VM name for KubeVirt allocations
-	IPAMBlockAttributeVMUID           = "vmuid" // VM UID for KubeVirt allocations
+	IPAMBlockAttributeVMIName         = "vmiName"
+	IPAMBlockAttributeVMName          = "vmName"
+	IPAMBlockAttributeVMUID           = "vmuid"
 	IPAMBlockAttributeType            = "type"
 	IPAMBlockAttributeService         = "service"
 	IPAMBlockAttributeTypeIPIP        = "ipipTunnelAddress"

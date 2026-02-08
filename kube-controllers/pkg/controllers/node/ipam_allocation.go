@@ -231,12 +231,12 @@ func (a *allocation) isPodIP() bool {
 }
 
 func (a *allocation) isVMIIP() bool {
-	_, ok := a.attrs[ipam.AttributeVMI]
+	_, ok := a.attrs[ipam.AttributeVMIName]
 	return ok
 }
 
 func (a *allocation) getVMIName() string {
-	if vmi, ok := a.attrs[ipam.AttributeVMI]; ok {
+	if vmi, ok := a.attrs[ipam.AttributeVMIName]; ok {
 		return vmi
 	}
 	return ""

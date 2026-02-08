@@ -967,7 +967,7 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 
 	// Handle VMI-based allocations
 	if a.isVMIIP() {
-		return c.vmiAllocationIsValid(a, preferCache)
+		return c.vmiAllocationIsValid(a)
 	}
 
 	if ns == "" || pod == "" {
@@ -1071,36 +1071,33 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 //     migration is active, OR we are within a short grace period.
 //   - VM intent (exists, not halted, not deleting) is a secondary gate (when reliably resolved),
 //     but VM existence alone is NOT sufficient to keep an IP alive across executions.
-func (c *IPAMController) vmiAllocationIsValid(a *allocation, _ bool) bool {
+func (c *IPAMController) vmiAllocationIsValid(a *allocation) bool {
 	ns := a.attrs[ipam.AttributeNamespace]
 	vmiName := a.getVMIName()
-	vmiUID := a.attrs["vmiuid"] // <-- MUST be set at allocation time (cmdAdd) for VMI pods.
 	logc := log.WithFields(a.fields())
 
 	// If we can't reason about it, don't GC it.
 	// (We can tighten this later once attrs are guaranteed.)
-	if ns == "" || vmiName == "" || vmiUID == "" || c.virtClient == nil {
+	if ns == "" || vmiName == "" || c.virtClient == nil {
 		logc.Debug("Insufficient data to validate VMI allocation, assuming valid")
 		return true
 	}
 
-	// Step 1: Resolve VM
+	// Step 1: Resolve and check VM
 	vm := c.resolveVMForAllocation(ns, vmiName, a, logc)
-	if vm == nil {
+	if vm == nil || !isVmValid(vm, logc) {
 		if c.isMigrating(ns, vmiName) || withinGracePeriod(a, logc) {
+			logc.Debug("VM not found, but migration or grace period applies; assuming allocation is valid")
 			return true
 		}
 		logc.Warn("Unable to reliably determine VM identity; treating allocation as leaked after grace")
 		return false
 	}
 
-	// Step 2: VM intent gate (only applies once VM was reliably found)
-	if !vmAllowsIP(vm, logc) {
-		return false
-	}
+	// Step 2: VMI execution exists and is valid
+	logc.Debug("Get VMI by ns and name")
+	vmi, err := c.getVmiByNsAndName(ns, vmiName)
 
-	// Step 3: VMI execution exists and matches UID => valid
-	vmi, err := c.getVmiByNameAndGuid(ns, vmiName, vmiUID)
 	if err != nil {
 		logc.WithError(err).Warn("Failed to check VMI existence; assuming valid")
 		return true
@@ -1108,16 +1105,16 @@ func (c *IPAMController) vmiAllocationIsValid(a *allocation, _ bool) bool {
 
 	if vmi != nil {
 		// VMI exists with matching UID
-		logc.Debug("VMI exists with matching UID; allocation is valid")
+		logc.Debug("VMI exists; allocation is valid")
 		return true
 	}
 
-	// Step 4: VMI missing - migration may explain transient absence
+	// Step 3: VMI missing - migration may explain transient absence
 	if c.isMigrating(ns, vmiName) {
 		return true
 	}
 
-	// Step 5: Grace period for legitimate transient absence (restart/cleanup jitter)
+	// Step 4: Grace period for legitimate transient absence (restart/cleanup jitter)
 	if withinGracePeriod(a, logc) {
 		return true
 	}
@@ -1126,13 +1123,13 @@ func (c *IPAMController) vmiAllocationIsValid(a *allocation, _ bool) bool {
 	return false
 }
 
-// getVmiByNameAndGuid returns the VirtualMachineInstance only if a VMI with the
+// getVmiByNsAndName returns the VirtualMachineInstance only if a VMI with the
 // given name exists, is not being deleted, and its UID matches the expected
 // execution UID.
 //
 // A nil VMI (with nil error) indicates that the VMI either no longer exists or
 // represents a different execution and therefore does not own the IP.
-func (c *IPAMController) getVmiByNameAndGuid(ns, vmiName, expectedUID string) (*kubevirtv1.VirtualMachineInstance, error) {
+func (c *IPAMController) getVmiByNsAndName(ns, vmiName string) (*kubevirtv1.VirtualMachineInstance, error) {
 	vmi, err := c.virtClient.VirtualMachineInstance(ns).
 		Get(context.Background(), vmiName, metav1.GetOptions{})
 	if err != nil {
@@ -1144,10 +1141,6 @@ func (c *IPAMController) getVmiByNameAndGuid(ns, vmiName, expectedUID string) (*
 	// (Execution is ending; let grace/migration logic handle transitions.)
 	if vmi.DeletionTimestamp != nil && !vmi.DeletionTimestamp.IsZero() {
 		return nil, nil
-	}
-
-	if string(vmi.UID) == expectedUID {
-		return vmi, nil
 	}
 
 	return nil, nil
@@ -1171,16 +1164,12 @@ func (c *IPAMController) resolveVMForAllocation(
 				return nil
 			}
 
-			if string(vm.UID) != string(vmRef.UID) {
-				logc.Warn("VM UID mismatch (deleted & recreated)")
-				return nil
-			}
 			return vm
 		}
 	}
 
 	// Stored VM identity (reliable if present)
-	vmName := a.attrs[ipam.AttributeVM]
+	vmName := a.attrs[ipam.AttributeVMName]
 	vmUID := a.attrs[ipam.AttributeVMUID]
 
 	if vmName != "" && vmUID != "" {
@@ -1191,21 +1180,17 @@ func (c *IPAMController) resolveVMForAllocation(
 			return nil
 		}
 
-		if string(vm.UID) != vmUID {
-			logc.Warn("Stored VM UID mismatch")
-			return nil
-		}
 		return vm
 	}
 
 	return nil
 }
 
-// vmAllowsIP returns whether a VirtualMachine still intends to retain ownership
+// isVmValid returns whether a VirtualMachine still intends to retain ownership
 // of its IP address, based on VM-level intent rather than VMI or pod state.
 //
 // An IP should be released when the VM is being deleted or explicitly halted.
-func vmAllowsIP(vm *kubevirtv1.VirtualMachine, logc *log.Entry) bool {
+func isVmValid(vm *kubevirtv1.VirtualMachine, logc *log.Entry) bool {
 	if vm.DeletionTimestamp != nil && !vm.DeletionTimestamp.IsZero() {
 		logc.Debug("VM is being deleted")
 		return false

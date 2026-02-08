@@ -225,7 +225,7 @@ func setupCalicoNodeVxlan(ctx context.Context, c client.Interface, nodeName stri
 	// Assign vtep IP.
 	// Check current status of vtep IP. It could be assigned already if migration controller restarts.
 	assign := true
-	attr, _, err := c.IPAM().GetAssignmentAttributes(ctx, vtepIP, ipam.OwnerAttributeTypeActive)
+	attr, _, _, err := c.IPAM().GetAssignmentAttributes(ctx, vtepIP)
 	if err == nil {
 		if attr[ipam.AttributeType] == ipam.AttributeTypeVXLAN && attr[ipam.AttributeNode] == nodeName {
 			// The tunnel address is still valid, do nothing.

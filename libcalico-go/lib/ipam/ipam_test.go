@@ -714,7 +714,7 @@ var _ = testutils.E2eDatastoreDescribe("IPAM tests", testutils.DatastoreAll, fun
 		sentinelIP := net.ParseIP("10.0.0.1")
 
 		It("Should return ResourceNotExist on no valid pool", func() {
-			attrs, handle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP}, OwnerAttributeTypeActive)
+			attrs, _, handle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP})
 			Expect(err).To(BeAssignableToTypeOf(cerrors.ErrorResourceDoesNotExist{}))
 			Expect(attrs).To(BeEmpty())
 			Expect(handle).To(BeNil())
@@ -738,7 +738,7 @@ var _ = testutils.E2eDatastoreDescribe("IPAM tests", testutils.DatastoreAll, fun
 			})
 
 			It("Should return ResourceNotExist error on no block", func() {
-				attrs, handle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP}, OwnerAttributeTypeActive)
+				attrs, _, handle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP})
 				Expect(err).To(BeAssignableToTypeOf(cerrors.ErrorResourceDoesNotExist{}))
 				Expect(attrs).To(BeEmpty())
 				Expect(handle).To(BeNil())
@@ -759,7 +759,7 @@ var _ = testutils.E2eDatastoreDescribe("IPAM tests", testutils.DatastoreAll, fun
 				err := ic.AssignIP(context.Background(), args)
 				Expect(err).NotTo(HaveOccurred())
 
-				attrs, returnedHandle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP}, OwnerAttributeTypeActive)
+				attrs, _, returnedHandle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(attrs).To(Equal(ipAttr))
 				Expect(returnedHandle).NotTo(BeNil())
@@ -781,7 +781,7 @@ var _ = testutils.E2eDatastoreDescribe("IPAM tests", testutils.DatastoreAll, fun
 				Expect(err).NotTo(HaveOccurred())
 
 				// Block exists but sentinel ip is not allocated.
-				attrs, handle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP}, OwnerAttributeTypeActive)
+				attrs, _, handle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP})
 				Expect(err).To(BeAssignableToTypeOf(cerrors.ErrorResourceDoesNotExist{}))
 				Expect(attrs).To(BeEmpty())
 				Expect(handle).To(BeNil())
@@ -1127,7 +1127,7 @@ var _ = testutils.E2eDatastoreDescribe("IPAM tests", testutils.DatastoreAll, fun
 
 		It("Should be able to re-assign the sentinel IP", func() {
 			assignIPutil(ic, sentinelIP, host)
-			attrs, handle, attrErr := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP}, OwnerAttributeTypeActive)
+			attrs, _, handle, attrErr := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP})
 			Expect(attrErr).NotTo(HaveOccurred())
 			Expect(attrs).To(BeEmpty())
 			Expect(handle).To(BeNil())
