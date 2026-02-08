@@ -680,7 +680,7 @@ func cmdDel(args *skel.CmdArgs) error {
 			ips, err := calicoClient.IPAM().IPsByHandle(ctx, handleID)
 			if err != nil {
 				logger.WithError(err).Warn("Failed to get IPs by handle")
-				return nil // Don't fail CNI deletion if we can't clear attributes
+				return err
 			}
 
 			// Build expected owner for verification
@@ -730,18 +730,27 @@ func cmdDel(args *skel.CmdArgs) error {
 					continue
 				}
 
-				// Clear the matching owner attributes
-				if err := calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, updates, preconditions); err != nil {
+				// Clear the matching owner attributes.
+				// Note: There is a potential race condition between GetAssignmentAttributes and SetOwnerAttributes.
+				// If Felix performs a SwapAttributes operation upon migration completion during this window,
+				// the block attributes may have changed, causing SetOwnerAttributes to fail with a precondition
+				// mismatch error. This is expected behavior - kubelet will retry the CNI DEL operation, and
+				// on the subsequent attempt, GetAssignmentAttributes will read the updated attributes and
+				// SetOwnerAttributes will succeed. This race condition should be extremely rare because it only
+				// gets triggered when a migration target pod gets deleted around the same time migration is completing,
+				// and the window is tiny (between GetAssignmentAttributes and SetOwnerAttributes).
+				err = calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, updates, preconditions)
+				if err != nil {
 					logger.WithError(err).WithFields(logrus.Fields{
 						"ip":        ip,
 						"ownerType": ownerType,
-					}).Warn("Failed to clear owner attributes")
-				} else {
-					logger.WithFields(logrus.Fields{
-						"ip":        ip,
-						"ownerType": ownerType,
-					}).Info("Successfully cleared owner attributes")
+					}).Error("Failed to clear owner attributes")
+					return err
 				}
+				logger.WithFields(logrus.Fields{
+					"ip":        ip,
+					"ownerType": ownerType,
+				}).Info("Successfully cleared owner attributes")
 			}
 
 			logger.Info("Completed attribute cleanup - IP remains allocated to VMI")
