@@ -843,30 +843,18 @@ func handleMigrationTarget(calicoClient client.Interface, handleID string, attrs
 
 	logger.WithField("ipCount", len(existingIPs)).Info("Found existing IPs for migration target")
 
-	// Build expected alternate owner from the target pod attributes we're about to set
-	// This will be used to verify existing AlternateOwnerAttrs matches before overwriting
-	var expectedAlternateOwner *ipam.AttributeOwner
-	if podName, podExists := attrs[ipam.AttributePod]; podExists {
-		if namespace, nsExists := attrs[ipam.AttributeNamespace]; nsExists {
-			expectedAlternateOwner = &ipam.AttributeOwner{
-				Namespace: namespace,
-				Name:      podName,
-			}
-		}
-	}
-
 	// Update AlternateOwnerAttrs for all IPs (handles dual-stack with both IPv4 and IPv6)
+	// No preconditions are used - we unconditionally overwrite any existing AlternateOwnerAttrs:
+	// - AlternateOwnerAttrs may be empty (no previous migration)
+	// - AlternateOwnerAttrs may contain the previous target pod (back-to-back migrations)
 	for _, existingIP := range existingIPs {
 		logger.WithField("ip", existingIP.IP).Info("Setting AlternateOwnerAttrs for IP")
 
-		// Set AlternateOwnerAttrs only (don't modify ActiveOwnerAttrs), verifying it matches expectedAlternateOwner if it already exists
+		// Set AlternateOwnerAttrs only (don't modify ActiveOwnerAttrs)
 		updates := &ipam.OwnerAttributeUpdates{
 			AttributesAlternateOwner: attrs,
 		}
-		preconditions := &ipam.OwnerAttributePreconditions{
-			ExpectedAlternateOwner: expectedAlternateOwner,
-		}
-		err = calicoClient.IPAM().SetOwnerAttributes(ctx, existingIP, handleID, updates, preconditions)
+		err = calicoClient.IPAM().SetOwnerAttributes(ctx, existingIP, handleID, updates, nil)
 		if err != nil {
 			logger.WithError(err).WithField("ip", existingIP.IP).Error("Failed to set AlternateOwnerAttrs")
 			return fmt.Errorf("failed to set AlternateOwnerAttrs for IP %s: %w", existingIP.IP, err)
