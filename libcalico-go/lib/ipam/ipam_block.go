@@ -653,7 +653,10 @@ func (b *allocationBlock) setOwnerAttributes(ip cnet.IP, handleID string, attrsA
 					currentPod = attr.ActiveOwnerAttrs[AttributePod]
 					currentNamespace = attr.ActiveOwnerAttrs[AttributeNamespace]
 				}
-				return fmt.Errorf("cannot set ActiveOwnerAttrs: expected pod=%s namespace=%s but found pod=%s namespace=%s", expectedActiveOwner.Name, expectedActiveOwner.Namespace, currentPod, currentNamespace)
+				return cerrors.ErrorResourceUpdateConflict{
+					Err:        fmt.Errorf("cannot set ActiveOwnerAttrs: expected pod=%s namespace=%s but found pod=%s namespace=%s", expectedActiveOwner.Name, expectedActiveOwner.Namespace, currentPod, currentNamespace),
+					Identifier: ip.String(),
+				}
 			}
 			logCtx.Debug("Verified expected active owner matches before setting ActiveOwnerAttrs")
 		}
@@ -679,7 +682,10 @@ func (b *allocationBlock) setOwnerAttributes(ip cnet.IP, handleID string, attrsA
 					currentPod = attr.AlternateOwnerAttrs[AttributePod]
 					currentNamespace = attr.AlternateOwnerAttrs[AttributeNamespace]
 				}
-				return fmt.Errorf("cannot set AlternateOwnerAttrs: expected pod=%s namespace=%s but found pod=%s namespace=%s", expectedAlternateOwner.Name, expectedAlternateOwner.Namespace, currentPod, currentNamespace)
+				return cerrors.ErrorResourceUpdateConflict{
+					Err:        fmt.Errorf("cannot set AlternateOwnerAttrs: expected pod=%s namespace=%s but found pod=%s namespace=%s", expectedAlternateOwner.Name, expectedAlternateOwner.Namespace, currentPod, currentNamespace),
+					Identifier: ip.String(),
+				}
 			}
 			logCtx.Debug("Verified expected alternate owner matches before setting AlternateOwnerAttrs")
 		}
