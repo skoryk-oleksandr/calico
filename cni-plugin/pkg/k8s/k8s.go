@@ -426,27 +426,18 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 		utils.ReleaseIPAllocation(logger, conf, args)
 	}
 
-	// Check if this is a KubeVirt migration target pod
-	// For migration target pods, skip route programming by passing empty routes
-	// The source pod keeps the route until migration completes, then Felix updates it
-	if pod, err := client.CoreV1().Pods(epIDs.Namespace).Get(ctx, epIDs.Pod, metav1.GetOptions{}); err == nil {
-		// Create KubeVirt client for VMI verification
-		if virtClient, err := NewKubeVirtClient(conf, logger); err == nil {
-			if vmiInfo, err := kubevirt.GetPodVMIInfo(pod, virtClient); err == nil && vmiInfo != nil && vmiInfo.IsMigrationTarget() {
-				logger.WithFields(logrus.Fields{
-					"vmiName":         vmiInfo.GetName(),
-					"vmiUID":          vmiInfo.GetUID(),
-					"migrationJobUID": vmiInfo.GetVMIMigrationUID(),
-				}).Info("Migration target pod detected - skipping route programming")
-				routes = []*net.IPNet{} // Empty routes to skip route programming
-			}
-		}
+	// Check if IPAM returned empty routes (migration target pod case)
+	// calico-ipam returns empty routes for migration target pods to skip host-side route programming
+	skipHostSideRoutes := false
+	if conf.IPAM.Type == "calico-ipam" && len(result.Routes) == 0 {
+		skipHostSideRoutes = true
+		logger.Info("IPAM returned empty routes - skipping host-side route programming")
 	}
 
 	// Whether the endpoint existed or not, the veth needs (re)creating.
 	desiredVethName := k8sconversion.NewConverter().VethNameForWorkload(epIDs.Namespace, epIDs.Pod)
 	hostVethName, contVethMac, err := d.DoNetworking(
-		ctx, calicoClient, args, result, desiredVethName, routes, endpoint, annot)
+		ctx, calicoClient, args, result, desiredVethName, routes, endpoint, annot, skipHostSideRoutes)
 	if err != nil {
 		logger.WithError(err).Error("Error setting up networking")
 		releaseIPAM()

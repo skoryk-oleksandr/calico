@@ -71,13 +71,10 @@ func GetEmptyAttributeOwner() *AttributeOwner {
 	}
 }
 
-// matchAttributeOwner checks if the given attributes match the expected owner.
-// If expectedOwner is the empty owner (from GetEmptyAttributeOwner), it matches
-// when attrs is empty (len == 0). Otherwise, it compares the "pod" and "namespace"
-// keys in attrs with expectedOwner's Name and Namespace.
-func matchAttributeOwner(attrs map[string]string, expectedOwner *AttributeOwner) bool {
+// MatchAttributeOwner checks if the given attributes match the expected owner.
+func MatchAttributeOwner(attrs map[string]string, expectedOwner *AttributeOwner) bool {
 	if expectedOwner == nil {
-		return false
+		log.Panic("MatchAttributeOwner called with nil expectedOwner")
 	}
 
 	// If expectedOwner is the empty owner, match if attrs is empty
@@ -113,7 +110,7 @@ func (c ipamClient) SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID
 	}
 
 	var attrsActiveOwner, attrsAlternateOwner map[string]string
-	
+
 	// Determine what to set for ActiveOwnerAttrs
 	if updates.ClearActiveOwner {
 		// Clear flag - use empty map to signal clear
@@ -121,7 +118,7 @@ func (c ipamClient) SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID
 	} else {
 		attrsActiveOwner = updates.AttributesActiveOwner
 	}
-	
+
 	// Determine what to set for AlternateOwnerAttrs
 	if updates.ClearAlternateOwner {
 		// Clear flag - use empty map to signal clear
