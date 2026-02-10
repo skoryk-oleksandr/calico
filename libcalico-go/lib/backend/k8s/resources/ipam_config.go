@@ -68,13 +68,20 @@ type ipamConfigClient struct {
 func (c ipamConfigClient) toV1(kvpv3 *model.KVPair) (*model.KVPair, error) {
 	v3obj := kvpv3.Value.(*libapiv3.IPAMConfig)
 
+	// Convert VMAddressPersistence type to string
+	var kubeVirtVMAddressPersistence *string
+	if v3obj.Spec.KubeVirtVMAddressPersistence != nil {
+		val := string(*v3obj.Spec.KubeVirtVMAddressPersistence)
+		kubeVirtVMAddressPersistence = &val
+	}
+
 	return &model.KVPair{
 		Key: model.IPAMConfigKey{},
 		Value: &model.IPAMConfig{
 			StrictAffinity:                v3obj.Spec.StrictAffinity,
 			AutoAllocateBlocks:            v3obj.Spec.AutoAllocateBlocks,
 			MaxBlocksPerHost:              v3obj.Spec.MaxBlocksPerHost,
-			KubeVirtVMAddressPersistence: v3obj.Spec.KubeVirtVMAddressPersistence,
+			KubeVirtVMAddressPersistence: kubeVirtVMAddressPersistence,
 		},
 		Revision: kvpv3.Revision,
 		UID:      &kvpv3.Value.(*libapiv3.IPAMConfig).UID,
@@ -91,6 +98,14 @@ func (c ipamConfigClient) toV3(kvpv1 *model.KVPair) *model.KVPair {
 	m.SetResourceVersion(kvpv1.Revision)
 
 	v1obj := kvpv1.Value.(*model.IPAMConfig)
+
+	// Convert string to VMAddressPersistence type
+	var kubeVirtVMAddressPersistence *libapiv3.VMAddressPersistence
+	if v1obj.KubeVirtVMAddressPersistence != nil {
+		val := libapiv3.VMAddressPersistence(*v1obj.KubeVirtVMAddressPersistence)
+		kubeVirtVMAddressPersistence = &val
+	}
+
 	return &model.KVPair{
 		Key: model.ResourceKey{
 			Name: model.IPAMConfigGlobalName,
@@ -106,7 +121,7 @@ func (c ipamConfigClient) toV3(kvpv1 *model.KVPair) *model.KVPair {
 				StrictAffinity:                v1obj.StrictAffinity,
 				AutoAllocateBlocks:            v1obj.AutoAllocateBlocks,
 				MaxBlocksPerHost:              v1obj.MaxBlocksPerHost,
-				KubeVirtVMAddressPersistence: v1obj.KubeVirtVMAddressPersistence,
+				KubeVirtVMAddressPersistence: kubeVirtVMAddressPersistence,
 			},
 		},
 		Revision: kvpv1.Revision,
