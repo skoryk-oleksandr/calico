@@ -241,7 +241,7 @@ var _ = Describe("IPAM controller UTs", func() {
 			virtClient.AddVM(vm)
 
 			allocation := makeVMIAllocation(namespace, vmName)
-			staleTime := time.Now().Add(-VMI_RECREATION_GRACE_PERIOD - time.Second)
+			staleTime := time.Now().Add(-VM_RECREATION_GRACE_PERIOD - time.Second)
 			allocation.leakedAt = &staleTime
 			Expect(c.vmAllocationIsValid(allocation)).To(BeFalse())
 		})
@@ -295,7 +295,7 @@ var _ = Describe("IPAM controller UTs", func() {
 			virtClient.AddVM(vm)
 
 			allocation := makeVMIAllocation(namespace, "invalid-vm-name")
-			staleTime := time.Now().Add(-VMI_RECREATION_GRACE_PERIOD - time.Second)
+			staleTime := time.Now().Add(-VM_RECREATION_GRACE_PERIOD - time.Second)
 			allocation.leakedAt = &staleTime
 			Expect(c.vmAllocationIsValid(allocation)).To(BeFalse())
 		})

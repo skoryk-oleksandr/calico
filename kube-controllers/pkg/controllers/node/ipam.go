@@ -51,10 +51,9 @@ import (
 )
 
 const (
-	// VMI_RECREATION_GRACE_PERIOD is the time window to allow VMI recreation after VM state changes.
-	// During this period, if a VMI doesn't exist but the VM exists and should be running,
-	// we assume the VMI is being recreated (e.g., during live migration, restart, etc.)
-	VMI_RECREATION_GRACE_PERIOD = 5 * time.Minute
+	// VM_RECREATION_GRACE_PERIOD is the time window to allow VM recreation.
+	// During this period, if a VM doesn't exist we assume the VM is being recreated (e.g., restart, etc.)
+	VM_RECREATION_GRACE_PERIOD = 5 * time.Minute
 )
 
 var (
@@ -1064,7 +1063,7 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 }
 
 // vmAllocationIsValid determines whether an IP allocation associated with a
-// KubeVirt VirtualMachine.
+// KubeVirt VirtualMachine is valid by verifying that the VM exists.
 func (c *IPAMController) vmAllocationIsValid(a *allocation) bool {
 	ns := a.attrs[ipam.AttributeNamespace]
 	vmName := a.getVMName()
@@ -1077,17 +1076,18 @@ func (c *IPAMController) vmAllocationIsValid(a *allocation) bool {
 		return true
 	}
 
-	vm := c.resolveVMForAllocation(ns, vmName, a, logc)
+	vm := c.getVmByNameSpaceAndName(ns, vmName, logc)
 	if vm == nil || !isVmValid(vm, logc) {
 		// Grace period for legitimate transient absence (restart, etc)
 		if withinGracePeriod(a, logc) {
+			// Still within grace period, so treat as valid for now.
 			return true
 		}
 		logc.Debug("VM not found for allocation; assuming allocation invalid")
 		return false
 	}
 
-	// Beyond grace, reclaim.
+	// VM exists and is valid, so allocation is valid.
 	return true
 }
 
@@ -1114,18 +1114,15 @@ func (c *IPAMController) getVmiByNsAndName(ns, vmiName string) (*kubevirtv1.Virt
 	return nil, nil
 }
 
-func (c *IPAMController) resolveVMForAllocation(
-	ns, vmiName string,
-	a *allocation,
+func (c *IPAMController) getVmByNameSpaceAndName(
+	ns, vmName string,
 	logc *log.Entry,
 ) *kubevirtv1.VirtualMachine {
-	vmName := a.attrs[ipam.AttributeVMName]
-
 	if vmName != "" {
 		vm, err := c.virtClient.VirtualMachine(ns).
 			Get(context.Background(), vmName, metav1.GetOptions{})
 		if err != nil {
-			logc.WithError(err).Debug("Stored VM identity not found")
+			logc.WithError(err).Debugf("VM for allocation is not found, namespace = %s, vmName = %s", ns, vmName)
 			return nil
 		}
 
@@ -1153,7 +1150,7 @@ func withinGracePeriod(a *allocation, logc *log.Entry) bool {
 		logc.Debug("VMI missing first time, starting grace period")
 		return true
 	}
-	if time.Since(*a.leakedAt) < VMI_RECREATION_GRACE_PERIOD {
+	if time.Since(*a.leakedAt) < VM_RECREATION_GRACE_PERIOD {
 		logc.Debug("Within VMI recreation grace period")
 		return true
 	}
