@@ -14,6 +14,7 @@ import (
 	"github.com/projectcalico/calico/cni-plugin/internal/pkg/testutils"
 	libapiv3 "github.com/projectcalico/calico/libcalico-go/lib/apis/v3"
 	client "github.com/projectcalico/calico/libcalico-go/lib/clientv3"
+	"github.com/projectcalico/calico/libcalico-go/lib/errors"
 	"github.com/projectcalico/calico/libcalico-go/lib/names"
 	"github.com/projectcalico/calico/libcalico-go/lib/options"
 
@@ -31,12 +32,34 @@ import (
 func updateIPAMKubeVirtIPPersistence(calicoClient client.Interface, persistence *libapiv3.VMAddressPersistence) {
 	ctx := context.Background()
 	ipamConfig, err := calicoClient.IPAMConfig().Get(ctx, "default", options.GetOptions{})
-	Expect(err).NotTo(HaveOccurred())
-
-	ipamConfig.Spec.KubeVirtVMAddressPersistence = persistence
-
-	_, err = calicoClient.IPAMConfig().Update(ctx, ipamConfig, options.SetOptions{})
-	Expect(err).NotTo(HaveOccurred())
+	
+	if err != nil {
+		// Check if error is specifically because the resource doesn't exist
+		if _, ok := err.(errors.ErrorResourceDoesNotExist); !ok {
+			// It's a different error, fail the test
+			Expect(err).NotTo(HaveOccurred())
+		}
+		
+		// IPAMConfig doesn't exist, create it
+		ipamConfig = &libapiv3.IPAMConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "default",
+			},
+			Spec: libapiv3.IPAMConfigSpec{
+				StrictAffinity:               false,
+				AutoAllocateBlocks:           true,
+				MaxBlocksPerHost:             0,
+				KubeVirtVMAddressPersistence: persistence,
+			},
+		}
+		_, err = calicoClient.IPAMConfig().Create(ctx, ipamConfig, options.SetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+	} else {
+		// IPAMConfig exists, update it
+		ipamConfig.Spec.KubeVirtVMAddressPersistence = persistence
+		_, err = calicoClient.IPAMConfig().Update(ctx, ipamConfig, options.SetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+	}
 }
 
 // KubeVirt VM-based handle ID tests
