@@ -22,7 +22,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	uruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/projectcalico/calico/kube-controllers/pkg/config"
@@ -42,27 +41,6 @@ const (
 	hepCreatedLabelValue  = "calico-kube-controllers"
 	timer                 = 5 * time.Minute
 )
-
-// tryCreateVirtClient attempts to create a KubeVirt client.
-// Returns nil if KubeVirt is not available.
-func tryCreateVirtClient(restConfig *rest.Config) kubevirt.VirtClientInterface {
-	if restConfig == nil {
-		log.Debug("No REST config provided.")
-		return nil
-	}
-
-	// Attempt to create a KubeVirt client from the REST config
-	virtClient, err := kubevirt.GetVirtClientFromRestConfig(restConfig)
-	if err != nil {
-		// This is expected if KubeVirt CRDs are not installed in the cluster
-		log.WithError(err).Debug("Failed to create KubeVirt client (likely KubeVirt not installed)")
-		return nil
-	}
-
-	// Wrap the client with our interface adapter
-	log.Info("Successfully created KubeVirt client for VMI IP validation")
-	return kubevirt.NewVirtClientAdapter(virtClient)
-}
 
 // NodeController implements the Controller interface.  It is responsible for monitoring
 // kubernetes nodes and responding to delete events by removing them from the Calico datastore.
