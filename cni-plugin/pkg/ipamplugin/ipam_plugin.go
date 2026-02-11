@@ -179,7 +179,11 @@ func cmdAdd(args *skel.CmdArgs) error {
 		"HandleID":    handleID,
 	})
 
-	ipamArgs := ipamArgs{}
+	ipamArgs := ipamArgs{
+		CommonArgs: cnitypes.CommonArgs{
+			IgnoreUnknown: cnitypes.UnmarshallableBool(true),
+		},
+	}
 	if err = cnitypes.LoadArgs(args.Args, &ipamArgs); err != nil {
 		return err
 	}
@@ -544,10 +548,11 @@ func acquireIPAMLockBestEffort(path string) unlockFn {
 // Uses GetLengthLimitedID to keep the namespace/name unhashed if short enough, otherwise hashes it.
 func createVMIHandleID(confName string, vmiInfo *kubevirt.PodVMIInfo) string {
 	// Create suffix from namespace and VMI name
-	suffix := fmt.Sprintf("%s/%s", vmiInfo.GetNamespace(), vmiInfo.GetName())
+	// Use dot separator instead of slash to ensure valid Kubernetes resource name
+	suffix := fmt.Sprintf("%s.%s", vmiInfo.GetNamespace(), vmiInfo.GetName())
 
 	// Build prefix: networkName.vmi
-	prefix := fmt.Sprintf("%s.vmi", confName)
+	prefix := fmt.Sprintf("%s.vmi.", confName)
 
 	// Use GetLengthLimitedID with max length 128
 	// This will keep the suffix unhashed if it fits, otherwise hash and truncate

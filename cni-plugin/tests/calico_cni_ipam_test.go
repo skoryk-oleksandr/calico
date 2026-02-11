@@ -639,15 +639,15 @@ var _ = Describe("Calico IPAM Tests", func() {
 			return
 		}
 
-	var k8sClient *kubernetes.Clientset
-	var testNs string
-	var vmName string
-	var vmiName string
-	var podName string
-	var vmUID string
-	var vmiUID string
+		var k8sClient *kubernetes.Clientset
+		var testNs string
+		var vmName string
+		var vmiName string
+		var podName string
+		var vmUID string
+		var vmiUID string
 
-	BeforeEach(func() {
+		BeforeEach(func() {
 			// Get Kubernetes client
 			config, err := clientcmd.BuildConfigFromFlags("", "/home/user/certs/kubeconfig")
 			Expect(err).NotTo(HaveOccurred())
@@ -679,113 +679,113 @@ var _ = Describe("Calico IPAM Tests", func() {
 			}
 		})
 
-	// Helper to create VM resource
-	createVM := func() {
-		config, err := clientcmd.BuildConfigFromFlags("", "/home/user/certs/kubeconfig")
-		Expect(err).NotTo(HaveOccurred())
+		// Helper to create VM resource
+		createVM := func() {
+			config, err := clientcmd.BuildConfigFromFlags("", "/home/user/certs/kubeconfig")
+			Expect(err).NotTo(HaveOccurred())
 
-		dynamicClient, err := dynamic.NewForConfig(config)
-		Expect(err).NotTo(HaveOccurred())
+			dynamicClient, err := dynamic.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
 
-		vm := &unstructured.Unstructured{
-			Object: map[string]interface{}{
-				"apiVersion": "kubevirt.io/v1",
-				"kind":       "VirtualMachine",
-				"metadata": map[string]interface{}{
-					"name":      vmName,
-					"namespace": testNs,
+			vm := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "kubevirt.io/v1",
+					"kind":       "VirtualMachine",
+					"metadata": map[string]interface{}{
+						"name":      vmName,
+						"namespace": testNs,
+					},
+					"spec": map[string]interface{}{
+						"running": true,
+					},
 				},
-				"spec": map[string]interface{}{
-					"running": true,
-				},
-			},
+			}
+
+			gvr := schema.GroupVersionResource{
+				Group:    "kubevirt.io",
+				Version:  "v1",
+				Resource: "virtualmachines",
+			}
+
+			createdVM, err := dynamicClient.Resource(gvr).Namespace(testNs).Create(context.Background(), vm, metav1.CreateOptions{})
+			if err != nil {
+				Skip(fmt.Sprintf("Skipping KubeVirt tests - CRDs not installed: %v", err))
+			}
+
+			// Get the actual UID assigned by Kubernetes
+			vmUID = string(createdVM.GetUID())
+			fmt.Printf("[TEST] VM created successfully: %s/%s (actual UID from K8s: %s)\n", testNs, vmName, vmUID)
 		}
 
-		gvr := schema.GroupVersionResource{
-			Group:    "kubevirt.io",
-			Version:  "v1",
-			Resource: "virtualmachines",
-		}
+		// Helper to create VMI resource
+		createVMI := func(withMigration bool, migrationUID string) {
+			config, err := clientcmd.BuildConfigFromFlags("", "/home/user/certs/kubeconfig")
+			Expect(err).NotTo(HaveOccurred())
 
-		createdVM, err := dynamicClient.Resource(gvr).Namespace(testNs).Create(context.Background(), vm, metav1.CreateOptions{})
-		if err != nil {
-			Skip(fmt.Sprintf("Skipping KubeVirt tests - CRDs not installed: %v", err))
-		}
-		
-		// Get the actual UID assigned by Kubernetes
-		vmUID = string(createdVM.GetUID())
-		fmt.Printf("[TEST] VM created successfully: %s/%s (actual UID from K8s: %s)\n", testNs, vmName, vmUID)
-	}
+			dynamicClient, err := dynamic.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
 
-	// Helper to create VMI resource
-	createVMI := func(withMigration bool, migrationUID string) {
-		config, err := clientcmd.BuildConfigFromFlags("", "/home/user/certs/kubeconfig")
-		Expect(err).NotTo(HaveOccurred())
+			controllerTrue := true
+			blockOwnerDeletion := true
 
-		dynamicClient, err := dynamic.NewForConfig(config)
-		Expect(err).NotTo(HaveOccurred())
-
-		controllerTrue := true
-		blockOwnerDeletion := true
-
-		vmiObj := &unstructured.Unstructured{
-			Object: map[string]interface{}{
-				"apiVersion": "kubevirt.io/v1",
-				"kind":       "VirtualMachineInstance",
-				"metadata": map[string]interface{}{
-					"name":      vmiName,
-					"namespace": testNs,
-					"ownerReferences": []interface{}{
-						map[string]interface{}{
-							"apiVersion":         "kubevirt.io/v1",
-							"kind":               "VirtualMachine",
-							"name":               vmName,
-							"uid":                vmUID,
-							"controller":         controllerTrue,
-							"blockOwnerDeletion": blockOwnerDeletion,
+			vmiObj := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "kubevirt.io/v1",
+					"kind":       "VirtualMachineInstance",
+					"metadata": map[string]interface{}{
+						"name":      vmiName,
+						"namespace": testNs,
+						"ownerReferences": []interface{}{
+							map[string]interface{}{
+								"apiVersion":         "kubevirt.io/v1",
+								"kind":               "VirtualMachine",
+								"name":               vmName,
+								"uid":                vmUID,
+								"controller":         controllerTrue,
+								"blockOwnerDeletion": blockOwnerDeletion,
+							},
+						},
+					},
+					"spec": map[string]interface{}{},
+					"status": map[string]interface{}{
+						"activePods": map[string]interface{}{
+							"pod-" + uuid.NewString(): "node1",
 						},
 					},
 				},
-				"spec": map[string]interface{}{},
-				"status": map[string]interface{}{
-					"activePods": map[string]interface{}{
-						"pod-" + uuid.NewString(): "node1",
-					},
-				},
-			},
-		}
-
-		// Add migration state if requested
-		if withMigration {
-			status := vmiObj.Object["status"].(map[string]interface{})
-			status["migrationState"] = map[string]interface{}{
-				"migrationUID": migrationUID,
-				"sourcePod":    "virt-launcher-source",
-				"targetPod":    podName,
 			}
+
+			// Add migration state if requested
+			if withMigration {
+				status := vmiObj.Object["status"].(map[string]interface{})
+				status["migrationState"] = map[string]interface{}{
+					"migrationUID": migrationUID,
+					"sourcePod":    "virt-launcher-source",
+					"targetPod":    podName,
+				}
+			}
+
+			gvr := schema.GroupVersionResource{
+				Group:    "kubevirt.io",
+				Version:  "v1",
+				Resource: "virtualmachineinstances",
+			}
+
+			createdVMI, err := dynamicClient.Resource(gvr).Namespace(testNs).Create(context.Background(), vmiObj, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get the actual UID assigned by Kubernetes (it ignores the UID we set)
+			vmiUID = string(createdVMI.GetUID())
+			fmt.Printf("[TEST] VMI created successfully: %s/%s (actual UID from K8s: %s, withMigration: %v)\n", testNs, vmiName, vmiUID, withMigration)
+
+			// Wait for VMI to be retrievable (to avoid race with IPAM plugin query)
+			fmt.Printf("[TEST] Waiting for VMI to be retrievable...\n")
+			Eventually(func() error {
+				_, err := dynamicClient.Resource(gvr).Namespace(testNs).Get(context.Background(), vmiName, metav1.GetOptions{})
+				return err
+			}, "5s", "100ms").Should(BeNil())
+			fmt.Printf("[TEST] VMI is now retrievable: %s/%s with UID: %s\n", testNs, vmiName, vmiUID)
 		}
-
-		gvr := schema.GroupVersionResource{
-			Group:    "kubevirt.io",
-			Version:  "v1",
-			Resource: "virtualmachineinstances",
-		}
-
-		createdVMI, err := dynamicClient.Resource(gvr).Namespace(testNs).Create(context.Background(), vmiObj, metav1.CreateOptions{})
-		Expect(err).NotTo(HaveOccurred())
-		
-		// Get the actual UID assigned by Kubernetes (it ignores the UID we set)
-		vmiUID = string(createdVMI.GetUID())
-		fmt.Printf("[TEST] VMI created successfully: %s/%s (actual UID from K8s: %s, withMigration: %v)\n", testNs, vmiName, vmiUID, withMigration)
-
-		// Wait for VMI to be retrievable (to avoid race with IPAM plugin query)
-		fmt.Printf("[TEST] Waiting for VMI to be retrievable...\n")
-		Eventually(func() error {
-			_, err := dynamicClient.Resource(gvr).Namespace(testNs).Get(context.Background(), vmiName, metav1.GetOptions{})
-			return err
-		}, "5s", "100ms").Should(BeNil())
-		fmt.Printf("[TEST] VMI is now retrievable: %s/%s with UID: %s\n", testNs, vmiName, vmiUID)
-	}
 
 		// Helper to create virt-launcher pod
 		createVirtLauncherPod := func(withMigrationLabel bool, migrationUID string) {
@@ -827,52 +827,58 @@ var _ = Describe("Calico IPAM Tests", func() {
 				},
 			}
 
-		_, err := k8sClient.CoreV1().Pods(testNs).Create(context.Background(), pod, metav1.CreateOptions{})
-		Expect(err).NotTo(HaveOccurred())
-		fmt.Printf("[TEST] Virt-launcher pod created successfully: %s/%s (withMigrationLabel: %v, VMI UID: %s)\n", testNs, podName, withMigrationLabel, vmiUID)
-	}
-
-	// Helper to create VMIM resource
-	createVMIM := func(migrationUID string) {
-		config, err := clientcmd.BuildConfigFromFlags("", "/home/user/certs/kubeconfig")
-		Expect(err).NotTo(HaveOccurred())
-
-		dynamicClient, err := dynamic.NewForConfig(config)
-		Expect(err).NotTo(HaveOccurred())
-
-		vmim := &unstructured.Unstructured{
-			Object: map[string]interface{}{
-				"apiVersion": "kubevirt.io/v1",
-				"kind":       "VirtualMachineInstanceMigration",
-				"metadata": map[string]interface{}{
-					"name":      "test-migration",
-					"namespace": testNs,
-					"uid":       migrationUID,
-				},
-				"spec": map[string]interface{}{
-					"vmiName": vmiName,
-				},
-			},
+			_, err := k8sClient.CoreV1().Pods(testNs).Create(context.Background(), pod, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			fmt.Printf("[TEST] Virt-launcher pod created successfully: %s/%s (withMigrationLabel: %v, VMI UID: %s)\n", testNs, podName, withMigrationLabel, vmiUID)
 		}
 
-		gvr := schema.GroupVersionResource{
-			Group:    "kubevirt.io",
-			Version:  "v1",
-			Resource: "virtualmachineinstancemigrations",
+		// Helper to create VMIM resource
+		createVMIM := func(migrationUID string) string {
+			config, err := clientcmd.BuildConfigFromFlags("", "/home/user/certs/kubeconfig")
+			Expect(err).NotTo(HaveOccurred())
+
+			dynamicClient, err := dynamic.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			vmim := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "kubevirt.io/v1",
+					"kind":       "VirtualMachineInstanceMigration",
+					"metadata": map[string]interface{}{
+						"name":      "test-migration",
+						"namespace": testNs,
+						// Don't set UID - Kubernetes will assign it
+					},
+					"spec": map[string]interface{}{
+						"vmiName": vmiName,
+					},
+				},
+			}
+
+			gvr := schema.GroupVersionResource{
+				Group:    "kubevirt.io",
+				Version:  "v1",
+				Resource: "virtualmachineinstancemigrations",
+			}
+
+			createdVMIM, err := dynamicClient.Resource(gvr).Namespace(testNs).Create(context.Background(), vmim, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			
+			// Get the actual UID assigned by Kubernetes
+			actualMigrationUID := string(createdVMIM.GetUID())
+			fmt.Printf("[TEST] VMIM created successfully: %s/test-migration (actual UID from K8s: %s)\n", testNs, actualMigrationUID)
+
+			// Wait for VMIM to be retrievable (to avoid race with IPAM plugin query)
+			fmt.Printf("[TEST] Waiting for VMIM to be retrievable...\n")
+			Eventually(func() error {
+				_, err := dynamicClient.Resource(gvr).Namespace(testNs).Get(context.Background(), "test-migration", metav1.GetOptions{})
+				return err
+			}, "5s", "100ms").Should(BeNil())
+			fmt.Printf("[TEST] VMIM is now retrievable: %s/test-migration with UID: %s\n", testNs, actualMigrationUID)
+			
+			// Return the actual UID for use in pod labels
+			return actualMigrationUID
 		}
-
-		_, err = dynamicClient.Resource(gvr).Namespace(testNs).Create(context.Background(), vmim, metav1.CreateOptions{})
-		Expect(err).NotTo(HaveOccurred())
-		fmt.Printf("[TEST] VMIM created successfully: %s/test-migration (UID: %s)\n", testNs, migrationUID)
-
-		// Wait for VMIM to be retrievable (to avoid race with IPAM plugin query)
-		fmt.Printf("[TEST] Waiting for VMIM to be retrievable...\n")
-		Eventually(func() error {
-			_, err := dynamicClient.Resource(gvr).Namespace(testNs).Get(context.Background(), "test-migration", metav1.GetOptions{})
-			return err
-		}, "5s", "100ms").Should(BeNil())
-		fmt.Printf("[TEST] VMIM is now retrievable: %s/test-migration with UID: %s\n", testNs, migrationUID)
-	}
 
 		It("should use VM-based handle ID for virt-launcher pod", func() {
 			fmt.Println("\n[TEST] ===== Running test: should use VM-based handle ID for virt-launcher pod =====")
@@ -915,17 +921,77 @@ var _ = Describe("Calico IPAM Tests", func() {
 
 		Context("Migration target pod", func() {
 			var migrationUID string
+			var sourcePodName string
+			var sourceCID string
 
 			BeforeEach(func() {
-				migrationUID = "migration-" + uuid.NewString()
-				fmt.Printf("\n[TEST] ===== BeforeEach for Migration target pod (migrationUID: %s) =====\n", migrationUID)
+				fmt.Printf("\n[TEST] ===== BeforeEach for Migration target pod =====\n")
 
-				// Create VM, VMI with migration state, VMIM, and target pod
+				// Step 1: Create VM and VMI (initially without migration)
 				createVM()
-				createVMI(true, migrationUID)
-				createVMIM(migrationUID)
+				createVMI(false, "")
+				
+				// Step 2: Create source pod and allocate IP to it
+				sourcePodName = "virt-launcher-" + vmiName + "-source"
+				sourceCID = uuid.NewString()
+				createVirtLauncherPod(false, "")  // Create the source pod (no migration label)
+				
+				// Step 3: Allocate IP to source pod
+				fmt.Printf("[TEST] Allocating IP to source pod %s\n", sourcePodName)
+				netconf := fmt.Sprintf(`{
+					"cniVersion": "%s",
+					"name": "net1",
+					"type": "calico",
+					"etcd_endpoints": "http://%s:2379",
+					"kubernetes": {
+						"kubeconfig": "/home/user/certs/kubeconfig",
+						"k8s_api_root": "https://127.0.0.1:6443"
+					},
+					"datastore_type": "kubernetes",
+					"log_level": "debug",
+					"ipam": {
+						"type": "calico-ipam"
+					}
+				}`, cniVersion, os.Getenv("ETCD_IP"))
+				
+				sourceCNIArgs := fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s;K8S_POD_INFRA_CONTAINER_ID=%s", sourcePodName, testNs, sourceCID)
+				result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", sourceCNIArgs, sourceCID, cniVersion)
+				Expect(exitCode).To(Equal(0), fmt.Sprintf("Source pod IPAM ADD failed: %v", errOut))
+				fmt.Printf("[TEST] Source pod allocated IP: %s\n", result.IPs[0].Address.IP.String())
+				
+				// Step 4: Now simulate migration - create VMIM and update pod to be target
+				placeholderMigrationUID := "migration-" + uuid.NewString()
+				migrationUID = createVMIM(placeholderMigrationUID)
+				
+				// Step 5: Create target pod with migration label
+				podName = "virt-launcher-" + vmiName + "-target"  // Different pod name for target
 				createVirtLauncherPod(true, migrationUID)
-				fmt.Println("[TEST] BeforeEach completed - all resources created")
+				
+				fmt.Println("[TEST] BeforeEach completed - source pod has IP, target pod created")
+			})
+
+			AfterEach(func() {
+				// Clean up source pod IP allocation
+				if sourcePodName != "" && sourceCID != "" {
+					netconf := fmt.Sprintf(`{
+						"cniVersion": "%s",
+						"name": "net1",
+						"type": "calico",
+						"etcd_endpoints": "http://%s:2379",
+						"kubernetes": {
+							"kubeconfig": "/home/user/certs/kubeconfig",
+							"k8s_api_root": "https://127.0.0.1:6443"
+						},
+						"datastore_type": "kubernetes",
+						"log_level": "debug",
+						"ipam": {
+							"type": "calico-ipam"
+						}
+					}`, cniVersion, os.Getenv("ETCD_IP"))
+					
+					sourceCNIArgs := fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s;K8S_POD_INFRA_CONTAINER_ID=%s", sourcePodName, testNs, sourceCID)
+					testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
+				}
 			})
 
 			It("should return empty routes for migration target pod", func() {
@@ -962,18 +1028,18 @@ var _ = Describe("Calico IPAM Tests", func() {
 				Expect(exitCode).To(Equal(0))
 			})
 
-		It("should fail if migration target but KubeVirtVMAddressPersistence is disabled", func() {
-			fmt.Println("\n[TEST] ===== Running test: should fail if migration target but KubeVirtVMAddressPersistence is disabled =====")
-			// Set IPAMConfig to disable VM address persistence
-			ipamConfig := &libapiv3.IPAMConfig{
+			It("should fail if migration target but KubeVirtVMAddressPersistence is disabled", func() {
+				fmt.Println("\n[TEST] ===== Running test: should fail if migration target but KubeVirtVMAddressPersistence is disabled =====")
+				// Set IPAMConfig to disable VM address persistence
+				ipamConfig := &libapiv3.IPAMConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "default",
 					},
 					Spec: libapiv3.IPAMConfigSpec{
-						StrictAffinity:                false,
-						AutoAllocateBlocks:            true,
-						MaxBlocksPerHost:              0,
-						KubeVirtVMAddressPersistence: stringPtr("Disabled"),
+						StrictAffinity:               false,
+						AutoAllocateBlocks:           true,
+						MaxBlocksPerHost:             0,
+						KubeVirtVMAddressPersistence: vmAddressPersistencePtr(libapiv3.VMAddressPersistenceDisabled),
 					},
 				}
 
@@ -984,7 +1050,7 @@ var _ = Describe("Calico IPAM Tests", func() {
 					Expect(err).NotTo(HaveOccurred())
 				}
 
-			netconf := fmt.Sprintf(`{
+				netconf := fmt.Sprintf(`{
 				"cniVersion": "%s",
 				"name": "net1",
 				"type": "calico",
@@ -1000,11 +1066,11 @@ var _ = Describe("Calico IPAM Tests", func() {
 				}
 			}`, cniVersion, os.Getenv("ETCD_IP"))
 
-			// Set CNI_ARGS with pod info (including K8S_POD_INFRA_CONTAINER_ID)
-			cniArgs := fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s;K8S_POD_INFRA_CONTAINER_ID=%s", podName, testNs, cid)
+				// Set CNI_ARGS with pod info (including K8S_POD_INFRA_CONTAINER_ID)
+				cniArgs := fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s;K8S_POD_INFRA_CONTAINER_ID=%s", podName, testNs, cid)
 
-			// Run IPAM ADD - should fail
-			_, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs, cid, cniVersion)
+				// Run IPAM ADD - should fail
+				_, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs, cid, cniVersion)
 				Expect(exitCode).NotTo(Equal(0), "IPAM ADD should fail when persistence is disabled")
 				Expect(errOut.Msg).To(ContainSubstring("not allowed when KubeVirtVMAddressPersistence is disabled"))
 
@@ -1019,4 +1085,9 @@ var _ = Describe("Calico IPAM Tests", func() {
 // Helper function to create string pointer
 func stringPtr(s string) *string {
 	return &s
+}
+
+// Helper function to create VMAddressPersistence pointer
+func vmAddressPersistencePtr(v libapiv3.VMAddressPersistence) *libapiv3.VMAddressPersistence {
+	return &v
 }
