@@ -32,7 +32,6 @@ import (
 	"k8s.io/apiserver/pkg/storage/etcd3"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
@@ -370,30 +369,12 @@ func getClients(kubeconfig string) (*kubernetes.Clientset, client.Interface, *ku
 		return nil, nil, nil, fmt.Errorf("failed to build kubernetes client: %s", err)
 	}
 
-	kubevirtClient := tryCreateVirtClient(k8sconfig)
+	kubevirtClient, err := kubevirt.TryCreateVirtClient(k8sconfig)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create kubevirt client: %w", err)
+	}
 
 	return k8sClientset, calicoClient, &kubevirtClient, nil
-}
-
-// tryCreateVirtClient attempts to create a KubeVirt client.
-// Returns nil if KubeVirt is not available.
-func tryCreateVirtClient(restConfig *rest.Config) kubevirt.VirtClientInterface {
-	if restConfig == nil {
-		log.Debug("No REST config provided.")
-		return nil
-	}
-
-	// Attempt to create a KubeVirt client from the REST config
-	virtClient, err := kubevirt.GetVirtClientFromRestConfig(restConfig)
-	if err != nil {
-		// This is expected if KubeVirt CRDs are not installed in the cluster
-		log.WithError(err).Debug("Failed to create KubeVirt client (likely KubeVirt not installed)")
-		return nil
-	}
-
-	// Wrap the client with our interface adapter
-	log.Info("Successfully created KubeVirt client for VMI IP validation")
-	return kubevirt.NewVirtClientAdapter(virtClient)
 }
 
 // Returns an etcdv3 client based on the environment. The client will be configured to

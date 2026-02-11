@@ -33,7 +33,6 @@ const (
 	IPAMBlockAttributePod             = "pod"
 	IPAMBlockAttributeNamespace       = "namespace"
 	IPAMBlockAttributeNode            = "node"
-	IPAMBlockAttributeVMIName         = "vmiName"
 	IPAMBlockAttributeVMName          = "vmName"
 	IPAMBlockAttributeVMUID           = "vmuid"
 	IPAMBlockAttributeType            = "type"

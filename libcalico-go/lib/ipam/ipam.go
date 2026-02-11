@@ -50,7 +50,6 @@ const (
 	AttributePod             = model.IPAMBlockAttributePod
 	AttributeNamespace       = model.IPAMBlockAttributeNamespace
 	AttributeNode            = model.IPAMBlockAttributeNode
-	AttributeVMIName         = model.IPAMBlockAttributeVMIName
 	AttributeVMName          = model.IPAMBlockAttributeVMName
 	AttributeVMUID           = model.IPAMBlockAttributeVMUID
 	AttributeTimestamp       = model.IPAMBlockAttributeTimestamp

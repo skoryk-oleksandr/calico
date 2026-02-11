@@ -966,8 +966,8 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 	}
 
 	// Handle VMI-based allocations
-	if a.isVMIIP() {
-		return c.vmiAllocationIsValid(a)
+	if a.isVMIPAllocation() {
+		return c.vmAllocationIsValid(a)
 	}
 
 	if ns == "" || pod == "" {
@@ -1063,64 +1063,32 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 	return false
 }
 
-// vmiAllocationIsValid determines whether an IP allocation associated with a
-// KubeVirt VirtualMachineInstance is still valid.
-//
-// Updated semantics (execution-scoped):
-//   - Allocation is valid if the *same VMI execution* still exists (UID match), OR
-//     migration is active, OR we are within a short grace period.
-//   - VM intent (exists, not halted, not deleting) is a secondary gate (when reliably resolved),
-//     but VM existence alone is NOT sufficient to keep an IP alive across executions.
-func (c *IPAMController) vmiAllocationIsValid(a *allocation) bool {
+// vmAllocationIsValid determines whether an IP allocation associated with a
+// KubeVirt VirtualMachine.
+func (c *IPAMController) vmAllocationIsValid(a *allocation) bool {
 	ns := a.attrs[ipam.AttributeNamespace]
-	vmiName := a.getVMIName()
+	vmName := a.getVMName()
 	logc := log.WithFields(a.fields())
 
 	// If we can't reason about it, don't GC it.
 	// (We can tighten this later once attrs are guaranteed.)
-	if ns == "" || vmiName == "" || c.virtClient == nil {
-		logc.Debug("Insufficient data to validate VMI allocation, assuming valid")
+	if ns == "" || vmName == "" || c.virtClient == nil {
+		logc.Debugf("Insufficient data to validate VMI allocation, assuming valid. Namespace = %s, vmName = %s", ns, vmName)
 		return true
 	}
 
-	// Step 1: Resolve and check VM
-	vm := c.resolveVMForAllocation(ns, vmiName, a, logc)
+	vm := c.resolveVMForAllocation(ns, vmName, a, logc)
 	if vm == nil || !isVmValid(vm, logc) {
-		if c.isMigrating(ns, vmiName) || withinGracePeriod(a, logc) {
-			logc.Debug("VM not found, but migration or grace period applies; assuming allocation is valid")
+		// Grace period for legitimate transient absence (restart, etc)
+		if withinGracePeriod(a, logc) {
 			return true
 		}
-		logc.Warn("Unable to reliably determine VM identity; treating allocation as leaked after grace")
+		logc.Debug("VM not found for allocation; assuming allocation invalid")
 		return false
 	}
 
-	// Step 2: VMI execution exists and is valid
-	logc.Debug("Get VMI by ns and name")
-	vmi, err := c.getVmiByNsAndName(ns, vmiName)
-
-	if err != nil {
-		logc.WithError(err).Warn("Failed to check VMI existence; assuming valid")
-		return true
-	}
-
-	if vmi != nil {
-		// VMI exists with matching UID
-		logc.Debug("VMI exists; allocation is valid")
-		return true
-	}
-
-	// Step 3: VMI missing - migration may explain transient absence
-	if c.isMigrating(ns, vmiName) {
-		return true
-	}
-
-	// Step 4: Grace period for legitimate transient absence (restart/cleanup jitter)
-	if withinGracePeriod(a, logc) {
-		return true
-	}
-
 	// Beyond grace, reclaim.
-	return false
+	return true
 }
 
 // getVmiByNsAndName returns the VirtualMachineInstance only if a VMI with the
@@ -1151,28 +1119,9 @@ func (c *IPAMController) resolveVMForAllocation(
 	a *allocation,
 	logc *log.Entry,
 ) *kubevirtv1.VirtualMachine {
-
-	// Try VMI -> OwnerReference
-	if vmi, err := c.virtClient.VirtualMachineInstance(ns).
-		Get(context.Background(), vmiName, metav1.GetOptions{}); err == nil {
-
-		if vmRef := getVMOwnerRef(vmi); vmRef != nil {
-			vm, err := c.virtClient.VirtualMachine(ns).
-				Get(context.Background(), vmRef.Name, metav1.GetOptions{})
-			if err != nil {
-				logc.WithError(err).Debug("VMI exists but VM not found")
-				return nil
-			}
-
-			return vm
-		}
-	}
-
-	// Stored VM identity (reliable if present)
 	vmName := a.attrs[ipam.AttributeVMName]
-	vmUID := a.attrs[ipam.AttributeVMUID]
 
-	if vmName != "" && vmUID != "" {
+	if vmName != "" {
 		vm, err := c.virtClient.VirtualMachine(ns).
 			Get(context.Background(), vmName, metav1.GetOptions{})
 		if err != nil {
@@ -1196,12 +1145,6 @@ func isVmValid(vm *kubevirtv1.VirtualMachine, logc *log.Entry) bool {
 		return false
 	}
 
-	if rs, err := vm.RunStrategy(); err == nil {
-		if rs == kubevirtv1.RunStrategyHalted {
-			logc.Debug("VM RunStrategy is Halted")
-			return false
-		}
-	}
 	return true
 }
 
