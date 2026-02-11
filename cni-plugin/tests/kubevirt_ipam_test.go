@@ -331,8 +331,8 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		Expect(exitCode).To(Equal(0), fmt.Sprintf("IPAM ADD failed: %v", errOut))
 		Expect(result.IPs).To(HaveLen(1))
 
-		// Verify routes are set (not empty) for normal pod
-		Expect(result.Routes).NotTo(BeEmpty(), "Normal virt-launcher pod should have routes")
+		// Verify routes are populated for normal pod
+		verifyRoutesPopulatedInResult(result, true)
 
 		// Clean up
 		_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", cniArgs, cid, cniVersion)
@@ -441,7 +441,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 			Expect(result.IPs).To(HaveLen(1))
 
 			// Verify empty routes for migration target
-			Expect(result.Routes).To(BeEmpty(), "Migration target pod should have empty routes")
+			verifyRoutesPopulatedInResult(result, false)
 
 			// Clean up
 			_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", cniArgs, cid, cniVersion)

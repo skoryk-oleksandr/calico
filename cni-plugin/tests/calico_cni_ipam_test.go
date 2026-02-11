@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/containernetworking/cni/pkg/types"
+	cniv1 "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/ginkgo/extensions/table"
@@ -30,6 +31,32 @@ import (
 
 var plugin = "calico-ipam"
 var defaultIPv4Pool = "192.168.0.0/16"
+
+// verifyRoutesPopulatedInResult verifies that routes are correctly populated in the IPAM result.
+// For normal pods (expectNonEmpty=true), it checks that routes exist for all assigned IPs.
+// For migration target pods (expectNonEmpty=false), it checks that routes are empty.
+func verifyRoutesPopulatedInResult(result *cniv1.Result, expectNonEmpty bool) {
+	if expectNonEmpty {
+		// Normal pods should have routes for all assigned IPs
+		Expect(result.Routes).NotTo(BeEmpty(), "Routes should be present for assigned IPs")
+
+		// Create a map of route destinations for easy lookup
+		routeDsts := make(map[string]bool)
+		for _, route := range result.Routes {
+			routeDsts[route.Dst.String()] = true
+		}
+
+		// Verify that each assigned IP has a corresponding route
+		for _, ip := range result.IPs {
+			ipWithMask := ip.Address.String()
+			Expect(routeDsts).To(HaveKey(ipWithMask),
+				fmt.Sprintf("Route should exist for IP %s", ipWithMask))
+		}
+	} else {
+		// Migration target pods should have empty routes
+		Expect(result.Routes).To(BeEmpty(), "Routes should be empty for migration target pod")
+	}
+}
 
 var _ = Describe("Calico IPAM Tests", func() {
 	cniVersion := os.Getenv("CNI_SPEC_VERSION")
@@ -85,20 +112,7 @@ var _ = Describe("Calico IPAM Tests", func() {
 				}
 
 				// Verify that routes are present for each assigned IP
-				Expect(result.Routes).NotTo(BeEmpty(), "Routes should be present for assigned IPs")
-
-				// Create a map of route destinations for easy lookup
-				routeDsts := make(map[string]bool)
-				for _, route := range result.Routes {
-					routeDsts[route.Dst.String()] = true
-				}
-
-				// Verify that each assigned IP has a corresponding route
-				for _, ip := range result.IPs {
-					ipWithMask := ip.Address.String()
-					Expect(routeDsts).To(HaveKey(ipWithMask),
-						fmt.Sprintf("Route should exist for IP %s", ipWithMask))
-				}
+				verifyRoutesPopulatedInResult(result, true)
 
 				_, _, exitCode := testutils.RunIPAMPlugin(netconf, "DEL", "", cid, cniVersion)
 				Expect(exitCode).Should(Equal(0))
