@@ -267,22 +267,22 @@ type AttributeOwner struct {
 // OwnerAttributeUpdates specifies the attribute values to set for ActiveOwnerAttrs and/or AlternateOwnerAttrs.
 // These are the actual values that will be written to the IP allocation.
 type OwnerAttributeUpdates struct {
-	// AttributesActiveOwner specifies attributes to set for ActiveOwnerAttrs.
+	// ActiveOwnerAttrs specifies attributes to set for ActiveOwnerAttrs.
 	// If nil and ClearActiveOwner is false, ActiveOwnerAttrs is not modified.
-	// If ClearActiveOwner is true, AttributesActiveOwner must be nil (error if both are set).
-	AttributesActiveOwner map[string]string
+	// If ClearActiveOwner is true, ActiveOwnerAttrs must be nil (error if both are set).
+	ActiveOwnerAttrs map[string]string
 
 	// ClearActiveOwner indicates that ActiveOwnerAttrs should be cleared (set to nil).
-	// If true, AttributesActiveOwner must be nil. An error is returned if both are set.
+	// If true, ActiveOwnerAttrs must be nil. An error is returned if both are set.
 	ClearActiveOwner bool
 
-	// AttributesAlternateOwner specifies attributes to set for AlternateOwnerAttrs.
+	// AlternateOwnerAttrs specifies attributes to set for AlternateOwnerAttrs.
 	// If nil and ClearAlternateOwner is false, AlternateOwnerAttrs is not modified.
-	// If ClearAlternateOwner is true, AttributesAlternateOwner must be nil (error if both are set).
-	AttributesAlternateOwner map[string]string
+	// If ClearAlternateOwner is true, AlternateOwnerAttrs must be nil (error if both are set).
+	AlternateOwnerAttrs map[string]string
 
 	// ClearAlternateOwner indicates that AlternateOwnerAttrs should be cleared (set to nil).
-	// If true, AttributesAlternateOwner must be nil. An error is returned if both are set.
+	// If true, AlternateOwnerAttrs must be nil. An error is returned if both are set.
 	ClearAlternateOwner bool
 }
 

@@ -105,14 +105,14 @@ func (c ipamClient) SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID
 		return fmt.Errorf("updates cannot be nil")
 	}
 
-	// Validate that ClearActiveOwner and AttributesActiveOwner are not both set
-	if updates.ClearActiveOwner && updates.AttributesActiveOwner != nil {
-		return fmt.Errorf("cannot set both ClearActiveOwner=true and AttributesActiveOwner: these are mutually exclusive")
+	// Validate that ClearActiveOwner and ActiveOwnerAttrs are not both set
+	if updates.ClearActiveOwner && updates.ActiveOwnerAttrs != nil {
+		return fmt.Errorf("cannot set both ClearActiveOwner=true and ActiveOwnerAttrs: these are mutually exclusive")
 	}
 
-	// Validate that ClearAlternateOwner and AttributesAlternateOwner are not both set
-	if updates.ClearAlternateOwner && updates.AttributesAlternateOwner != nil {
-		return fmt.Errorf("cannot set both ClearAlternateOwner=true and AttributesAlternateOwner: these are mutually exclusive")
+	// Validate that ClearAlternateOwner and AlternateOwnerAttrs are not both set
+	if updates.ClearAlternateOwner && updates.AlternateOwnerAttrs != nil {
+		return fmt.Errorf("cannot set both ClearAlternateOwner=true and AlternateOwnerAttrs: these are mutually exclusive")
 	}
 
 	var attrsActiveOwner, attrsAlternateOwner map[string]string
@@ -122,7 +122,7 @@ func (c ipamClient) SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID
 		// Clear flag - use empty map to signal clear
 		attrsActiveOwner = map[string]string{}
 	} else {
-		attrsActiveOwner = updates.AttributesActiveOwner
+		attrsActiveOwner = updates.ActiveOwnerAttrs
 	}
 
 	// Determine what to set for AlternateOwnerAttrs
@@ -130,7 +130,7 @@ func (c ipamClient) SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID
 		// Clear flag - use empty map to signal clear
 		attrsAlternateOwner = map[string]string{}
 	} else {
-		attrsAlternateOwner = updates.AttributesAlternateOwner
+		attrsAlternateOwner = updates.AlternateOwnerAttrs
 	}
 
 	var expectedActiveOwner, expectedAlternateOwner *AttributeOwner

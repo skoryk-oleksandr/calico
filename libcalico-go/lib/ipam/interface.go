@@ -120,9 +120,9 @@ type Interface interface {
 	//     If nil, no verification is performed.
 	//
 	// Use cases:
-	//   - Set AlternateOwnerAttrs only: updates.AttributesAlternateOwner=<target pod attrs>
+	//   - Set AlternateOwnerAttrs only: updates.AlternateOwnerAttrs=<target pod attrs>
 	//   - Clear ActiveOwnerAttrs: updates.ClearActiveOwner=true
-	//   - Swap attributes: updates.AttributesActiveOwner=<current alternate>, updates.AttributesAlternateOwner=<current active>
-	//   - Set both: updates.AttributesActiveOwner=<new active>, updates.AttributesAlternateOwner=<new alternate>
+	//   - Swap attributes: updates.ActiveOwnerAttrs=<current alternate>, updates.AlternateOwnerAttrs=<current active>
+	//   - Set both: updates.ActiveOwnerAttrs=<new active>, updates.AlternateOwnerAttrs=<new alternate>
 	SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID string, updates *OwnerAttributeUpdates, preconditions *OwnerAttributePreconditions) error
 }

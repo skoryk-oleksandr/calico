@@ -880,7 +880,7 @@ func handleMigrationTarget(calicoClient client.Interface, handleID string, attrs
 
 		// Set AlternateOwnerAttrs only (don't modify ActiveOwnerAttrs)
 		updates := &ipam.OwnerAttributeUpdates{
-			AttributesAlternateOwner: attrs,
+			AlternateOwnerAttrs: attrs,
 		}
 		err = calicoClient.IPAM().SetOwnerAttributes(ctx, existingIP, handleID, updates, nil)
 		if err != nil {
