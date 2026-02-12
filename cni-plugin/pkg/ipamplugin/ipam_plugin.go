@@ -43,7 +43,6 @@ import (
 	"github.com/projectcalico/calico/libcalico-go/lib/apiconfig"
 	client "github.com/projectcalico/calico/libcalico-go/lib/clientv3"
 	"github.com/projectcalico/calico/libcalico-go/lib/errors"
-	"github.com/projectcalico/calico/libcalico-go/lib/hash"
 	"github.com/projectcalico/calico/libcalico-go/lib/ipam"
 	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 	"github.com/projectcalico/calico/libcalico-go/lib/logutils"
@@ -542,21 +541,13 @@ func acquireIPAMLockBestEffort(path string) unlockFn {
 }
 
 // createVMIHandleID creates a handle ID for a KubeVirt VMI pod based on namespace and VMI name.
-// The handle ID format is: <networkName>.vmi<suffix> or <networkName>.vmi_<hash> if suffix is too long
+// The handle ID format is: <networkName>.vmi.<namespace>.<vmiName> (length-limited to 128 chars)
 // This ensures IP persistence across VMI pod recreations and live migrations since
 // the VMI name and namespace remain stable (VM and VMI share the same name).
-// Uses GetLengthLimitedID to keep the namespace/name unhashed if short enough, otherwise hashes it.
+// This function delegates to ipam.CreateVMIHandleID to ensure consistent handle generation
+// across CNI plugin and Felix.
 func createVMIHandleID(confName string, vmiInfo *kubevirt.PodVMIInfo) string {
-	// Create suffix from namespace and VMI name
-	// Use dot separator instead of slash to ensure valid Kubernetes resource name
-	suffix := fmt.Sprintf("%s.%s", vmiInfo.GetNamespace(), vmiInfo.GetName())
-
-	// Build prefix: networkName.vmi
-	prefix := fmt.Sprintf("%s.vmi.", confName)
-
-	// Use GetLengthLimitedID with max length 128
-	// This will keep the suffix unhashed if it fits, otherwise hash and truncate
-	return hash.GetLengthLimitedID(prefix, suffix, 128)
+	return ipam.CreateVMIHandleID(confName, vmiInfo.GetNamespace(), vmiInfo.GetName())
 }
 
 // getVMIInfoForPod retrieves KubeVirt VirtualMachineInstance (VMI) information for a given pod.
