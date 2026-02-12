@@ -25,41 +25,47 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// GetAssignmentAttributes returns the attributes stored with the given IP address
-// for both ActiveOwnerAttrs and AlternateOwnerAttrs, as well as the handle used
-// for assignment (if any). This provides an atomic snapshot of both attributes.
-func (c ipamClient) GetAssignmentAttributes(ctx context.Context, addr cnet.IP) (map[string]string, map[string]string, *string, error) {
+// GetAssignmentAttributes returns the AllocationAttribute for the given IP address,
+// which includes the handle ID, ActiveOwnerAttrs, and AlternateOwnerAttrs.
+// This provides an atomic snapshot of all allocation attributes for the IP.
+// Returns nil if the IP is not assigned.
+func (c ipamClient) GetAssignmentAttributes(ctx context.Context, addr cnet.IP) (*model.AllocationAttribute, error) {
 	pool, err := c.blockReaderWriter.getPoolForIP(ctx, addr, nil)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	if pool == nil {
 		log.Errorf("Error reading pool for %s", addr.String())
-		return nil, nil, nil, cerrors.ErrorResourceDoesNotExist{Identifier: addr.String(), Err: errors.New("No valid IPPool")}
+		return nil, cerrors.ErrorResourceDoesNotExist{Identifier: addr.String(), Err: errors.New("No valid IPPool")}
 	}
 	blockCIDR := getBlockCIDRForAddress(addr, pool)
 	obj, err := c.blockReaderWriter.queryBlock(ctx, blockCIDR, "")
 	if err != nil {
 		log.Errorf("Error reading block %s: %v", blockCIDR, err)
-		return nil, nil, nil, err
+		return nil, err
 	}
 	block := allocationBlock{obj.Value.(*model.AllocationBlock)}
 
 	// Get both ActiveOwnerAttrs and AlternateOwnerAttrs
 	activeAttrs, err := block.attributesForIP(addr, OwnerAttributeTypeActive)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	alternateAttrs, err := block.attributesForIP(addr, OwnerAttributeTypeAlternate)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	handle, err := block.handleForIP(addr)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
-	return activeAttrs, alternateAttrs, handle, nil
+
+	return &model.AllocationAttribute{
+		HandleID:            handle,
+		ActiveOwnerAttrs:    activeAttrs,
+		AlternateOwnerAttrs: alternateAttrs,
+	}, nil
 }
 
 // GetEmptyAttributeOwner returns an AttributeOwner with empty namespace and name.

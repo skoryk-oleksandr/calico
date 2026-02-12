@@ -693,16 +693,16 @@ func cmdDel(args *skel.CmdArgs) error {
 		for _, ip := range ips {
 			logger.WithField("ip", ip).Info("Attempting to clear pod attributes")
 
-			// Get current ActiveOwnerAttrs and AlternateOwnerAttrs
-			activeAttrs, alternateAttrs, _, err := calicoClient.IPAM().GetAssignmentAttributes(ctx, ip)
+			// Get current AllocationAttribute
+			attr, err := calicoClient.IPAM().GetAssignmentAttributes(ctx, ip)
 			if err != nil {
 				logger.WithError(err).WithField("ip", ip).Warn("Failed to get assignment attributes, skipping attribute cleanup")
 				continue
 			}
 
 			// Check which attribute owner matches this pod using MatchAttributeOwner
-			activeMatches := ipam.MatchAttributeOwner(activeAttrs, expectedOwner)
-			alternateMatches := ipam.MatchAttributeOwner(alternateAttrs, expectedOwner)
+			activeMatches := ipam.MatchAttributeOwner(attr.ActiveOwnerAttrs, expectedOwner)
+			alternateMatches := ipam.MatchAttributeOwner(attr.AlternateOwnerAttrs, expectedOwner)
 
 			// Prepare updates and preconditions based on which owner type matches
 			var updates *ipam.OwnerAttributeUpdates
@@ -756,19 +756,19 @@ func cmdDel(args *skel.CmdArgs) error {
 		// Second pass: Check if any owner attributes remain after clearing this pod's attributes
 		anyOwnerAttributesRemain := false
 		for _, ip := range ips {
-			activeAttrs, alternateAttrs, _, err := calicoClient.IPAM().GetAssignmentAttributes(ctx, ip)
+			attr, err := calicoClient.IPAM().GetAssignmentAttributes(ctx, ip)
 			if err != nil {
 				logger.WithError(err).WithField("ip", ip).Error("Failed to get assignment attributes for post-cleanup check")
 				return fmt.Errorf("failed to verify owner attributes after cleanup for IP %s: %w", ip, err)
 			}
 
 			// Check if any owner attributes exist
-			if activeAttrs != nil || alternateAttrs != nil {
+			if attr.ActiveOwnerAttrs != nil || attr.AlternateOwnerAttrs != nil {
 				anyOwnerAttributesRemain = true
 				logger.WithFields(logrus.Fields{
 					"ip":                ip,
-					"hasActiveOwner":    activeAttrs != nil,
-					"hasAlternateOwner": alternateAttrs != nil,
+					"hasActiveOwner":    attr.ActiveOwnerAttrs != nil,
+					"hasAlternateOwner": attr.AlternateOwnerAttrs != nil,
 				}).Debug("Owner attributes still exist for this IP")
 				break // No need to check remaining IPs
 			}
