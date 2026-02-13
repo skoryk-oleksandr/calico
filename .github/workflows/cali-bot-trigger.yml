@@ -23,7 +23,7 @@ jobs:
           echo "Comment ID:   ${{ github.event.comment.id }}"
           echo "Author:       ${{ github.event.comment.user.login }}"
 
-      - name: Trigger Kali Bot
+      - name: Trigger Cali Bot
         run: |
           EVENT_TYPE=""
           COMMENT_ID=""
@@ -39,8 +39,8 @@ jobs:
 
           curl -X POST \
             -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.KALI_BOT_PAT }}" \
-            https://api.github.com/repos/tigera/cali-bot/actions/workflows/process-github-issue.yml/dispatches \
+            -H "Authorization: Bearer ${{ secrets.CALI_BOT_PAT }}" \
+            https://api.github.com/repos/tigera/cali-bot/actions/workflows/process-issue.yml/dispatches \
             -d @- <<EOF
           {
             "ref": "master",
