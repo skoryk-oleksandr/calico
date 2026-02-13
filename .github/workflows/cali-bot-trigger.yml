@@ -43,7 +43,7 @@ jobs:
             https://api.github.com/repos/tigera/cali-bot/actions/workflows/process-issue.yml/dispatches \
             -d @- <<EOF
           {
-            "ref": "master",
+            "ref": "main",
             "inputs": {
               "TRIGGER_EVENT": "$EVENT_TYPE",
               "ISSUE_NUMBER": "${{ github.event.issue.number }}",
