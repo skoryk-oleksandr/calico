@@ -41,12 +41,14 @@ import (
 	"github.com/projectcalico/calico/cni-plugin/pkg/types"
 	"github.com/projectcalico/calico/cni-plugin/pkg/upgrade"
 	"github.com/projectcalico/calico/libcalico-go/lib/apiconfig"
+	libapiv3 "github.com/projectcalico/calico/libcalico-go/lib/apis/v3"
 	client "github.com/projectcalico/calico/libcalico-go/lib/clientv3"
 	"github.com/projectcalico/calico/libcalico-go/lib/errors"
 	"github.com/projectcalico/calico/libcalico-go/lib/ipam"
 	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 	"github.com/projectcalico/calico/libcalico-go/lib/logutils"
 	cnet "github.com/projectcalico/calico/libcalico-go/lib/net"
+	"github.com/projectcalico/calico/libcalico-go/lib/options"
 )
 
 func Main(version string) {
@@ -205,13 +207,16 @@ func cmdAdd(args *skel.CmdArgs) error {
 			// Check if VM address persistence is disabled
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			ipamConfig, err := calicoClient.IPAM().GetIPAMConfig(ctx)
+			ipamConfig, err := calicoClient.IPAMConfig().Get(ctx, "default", options.GetOptions{})
 			if err != nil {
+				logger.Errorf("[DEBUG] Failed to get IPAM config: %v", err)
 				return fmt.Errorf("failed to get IPAM config: %w", err)
 			}
+
 			// If persistence is explicitly disabled, migration targets are not allowed
-			if ipamConfig.KubeVirtVMAddressPersistence != nil &&
-				*ipamConfig.KubeVirtVMAddressPersistence == ipam.VMAddressPersistenceDisabled {
+			if ipamConfig.Spec.KubeVirtVMAddressPersistence != nil &&
+				*ipamConfig.Spec.KubeVirtVMAddressPersistence == libapiv3.VMAddressPersistenceDisabled {
+				logger.Errorf("[DEBUG] Live migration target pod rejected: KubeVirtVMAddressPersistence is disabled")
 				return fmt.Errorf("live migration target pod is not allowed when KubeVirtVMAddressPersistence is disabled")
 			}
 

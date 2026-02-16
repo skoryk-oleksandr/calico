@@ -19,10 +19,11 @@ import (
 	"errors"
 	"fmt"
 
+	log "github.com/sirupsen/logrus"
+
 	"github.com/projectcalico/calico/libcalico-go/lib/backend/model"
 	cerrors "github.com/projectcalico/calico/libcalico-go/lib/errors"
 	cnet "github.com/projectcalico/calico/libcalico-go/lib/net"
-	log "github.com/sirupsen/logrus"
 )
 
 // GetAssignmentAttributes returns the AllocationAttribute for the given IP address,

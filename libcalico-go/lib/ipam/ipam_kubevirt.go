@@ -19,10 +19,11 @@ import (
 	"errors"
 	"fmt"
 
+	log "github.com/sirupsen/logrus"
+
 	"github.com/projectcalico/calico/libcalico-go/lib/backend/model"
 	"github.com/projectcalico/calico/libcalico-go/lib/hash"
 	cnet "github.com/projectcalico/calico/libcalico-go/lib/net"
-	log "github.com/sirupsen/logrus"
 )
 
 // Error types for VerifyAndSwapOwnerAttribute

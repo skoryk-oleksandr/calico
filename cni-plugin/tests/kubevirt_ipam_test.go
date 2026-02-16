@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2020 Tigera, Inc. All rights reserved.
+// Copyright (c) 2026 Tigera, Inc. All rights reserved.
 
 package main_test
 
@@ -32,15 +32,16 @@ import (
 func updateIPAMKubeVirtIPPersistence(calicoClient client.Interface, persistence *libapiv3.VMAddressPersistence) {
 	ctx := context.Background()
 	ipamConfig, err := calicoClient.IPAMConfig().Get(ctx, "default", options.GetOptions{})
-	
+
 	if err != nil {
 		// Check if error is specifically because the resource doesn't exist
 		if _, ok := err.(errors.ErrorResourceDoesNotExist); !ok {
 			// It's a different error, fail the test
 			Expect(err).NotTo(HaveOccurred())
 		}
-		
+
 		// IPAMConfig doesn't exist, create it
+		fmt.Printf("[TEST] Creating IPAMConfig with KubeVirtVMAddressPersistence = %v\n", persistence)
 		ipamConfig = &libapiv3.IPAMConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "default",
@@ -54,11 +55,14 @@ func updateIPAMKubeVirtIPPersistence(calicoClient client.Interface, persistence 
 		}
 		_, err = calicoClient.IPAMConfig().Create(ctx, ipamConfig, options.SetOptions{})
 		Expect(err).NotTo(HaveOccurred())
+		fmt.Printf("[TEST] IPAMConfig created successfully\n")
 	} else {
 		// IPAMConfig exists, update it
+		fmt.Printf("[TEST] Updating existing IPAMConfig with KubeVirtVMAddressPersistence = %v\n", persistence)
 		ipamConfig.Spec.KubeVirtVMAddressPersistence = persistence
 		_, err = calicoClient.IPAMConfig().Update(ctx, ipamConfig, options.SetOptions{})
 		Expect(err).NotTo(HaveOccurred())
+		fmt.Printf("[TEST] IPAMConfig updated successfully\n")
 	}
 }
 
@@ -118,7 +122,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 
 		vmName = "test-vm"
 		podName = "virt-launcher-" + vmName + "-abcde"
-		
+
 		// Initialize KubeVirt resource manager
 		virtResourceManager, err = NewKubeVirtResourceManager(k8sClient, testNs, vmName)
 		Expect(err).NotTo(HaveOccurred())
@@ -308,8 +312,9 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 	Context("KubeVirt VM persistence disabled", func() {
 		BeforeEach(func() {
 			// Set IPAMConfig to disable VM address persistence before setting up resources
+			// (Parent BeforeEach already called initialiseTestInfra which wiped datastore)
 			updateIPAMKubeVirtIPPersistence(calicoClient, vmAddressPersistencePtr(libapiv3.VMAddressPersistenceDisabled))
-			
+
 			// Set up migration target scenario
 			_, _, _ = setupMigrationTarget()
 		})
