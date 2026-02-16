@@ -118,6 +118,27 @@ func verifyOwnerAttributes(
 	}
 }
 
+// getDualStackNetconf returns a netconf JSON string that requests both IPv4 and IPv6 addresses.
+func getDualStackNetconf(cniVersion string) string {
+	return fmt.Sprintf(`{
+		"cniVersion": "%s",
+		"name": "net1",
+		"type": "calico",
+		"etcd_endpoints": "http://%s:2379",
+		"kubernetes": {
+			"kubeconfig": "/home/user/certs/kubeconfig",
+			"k8s_api_root": "https://127.0.0.1:6443"
+		},
+		"datastore_type": "kubernetes",
+		"log_level": "debug",
+		"ipam": {
+			"type": "calico-ipam",
+			"assign_ipv4": "true",
+			"assign_ipv6": "true"
+		}
+	}`, cniVersion, os.Getenv("ETCD_IP"))
+}
+
 // updateIPAMKubeVirtIPPersistence updates the KubeVirtVMAddressPersistence setting in IPAMConfig
 func updateIPAMKubeVirtIPPersistence(calicoClient client.Interface, persistence *libapiv3.VMAddressPersistence) {
 	ctx := context.Background()
@@ -239,28 +260,15 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		}, "5s", "100ms").Should(BeNil())
 		fmt.Printf("[TEST] Source pod is now retrievable: %s/%s\n", testNs, sourcePodName)
 
-		// Step 3: Allocate IP to source pod
-		fmt.Printf("[TEST] Allocating IP to source pod %s\n", sourcePodName)
-		netconf := fmt.Sprintf(`{
-			"cniVersion": "%s",
-			"name": "net1",
-			"type": "calico",
-			"etcd_endpoints": "http://%s:2379",
-			"kubernetes": {
-				"kubeconfig": "/home/user/certs/kubeconfig",
-				"k8s_api_root": "https://127.0.0.1:6443"
-			},
-			"datastore_type": "kubernetes",
-			"log_level": "debug",
-			"ipam": {
-				"type": "calico-ipam"
-			}
-		}`, cniVersion, os.Getenv("ETCD_IP"))
+		// Step 3: Allocate dual-stack IPs to source pod
+		fmt.Printf("[TEST] Allocating dual-stack IPs to source pod %s\n", sourcePodName)
+		netconf := getDualStackNetconf(cniVersion)
 
 		sourceCNIArgs := GetCNIArgsForPod(sourcePodName, testNs, sourceCID)
 		result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", sourceCNIArgs, sourceCID, cniVersion)
 		Expect(exitCode).To(Equal(0), fmt.Sprintf("Source pod IPAM ADD failed: %v", errOut))
-		fmt.Printf("[TEST] Source pod allocated IP: %s\n", result.IPs[0].Address.IP.String())
+		Expect(result.IPs).To(HaveLen(2), "Expected dual-stack: one IPv4 and one IPv6")
+		fmt.Printf("[TEST] Source pod allocated IPs: %s, %s\n", result.IPs[0].Address.IP.String(), result.IPs[1].Address.IP.String())
 
 		// Step 4: Now simulate migration - create VMIM
 		migrationUID = virtResourceManager.CreateVMIM("test-migration")
@@ -300,28 +308,25 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		virtResourceManager.CreateVMI(false, "")
 		virtResourceManager.CreateVirtLauncherPod(podName, "")
 
-		netconf := fmt.Sprintf(`{
-			"cniVersion": "%s",
-			"name": "net1",
-			"type": "calico",
-			"etcd_endpoints": "http://%s:2379",
-			"kubernetes": {
-				"kubeconfig": "/home/user/certs/kubeconfig",
-				"k8s_api_root": "https://127.0.0.1:6443"
-			},
-			"datastore_type": "kubernetes",
-			"log_level": "debug",
-			"ipam": {
-				"type": "calico-ipam"
-			}
-		}`, cniVersion, os.Getenv("ETCD_IP"))
-
+		netconf := getDualStackNetconf(cniVersion)
 		cniArgs := GetCNIArgsForPod(podName, testNs, cid)
 
-		// Run IPAM ADD
+		// Run IPAM ADD - should get one IPv4 and one IPv6
 		result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs, cid, cniVersion)
 		Expect(exitCode).To(Equal(0), fmt.Sprintf("IPAM ADD failed: %v", errOut))
-		Expect(result.IPs).To(HaveLen(1))
+		Expect(result.IPs).To(HaveLen(2), "Expected dual-stack: one IPv4 and one IPv6")
+
+		// Verify one IPv4 and one IPv6 address
+		var hasIPv4, hasIPv6 bool
+		for _, ipConfig := range result.IPs {
+			if ipConfig.Address.IP.To4() != nil {
+				hasIPv4 = true
+			} else {
+				hasIPv6 = true
+			}
+		}
+		Expect(hasIPv4).To(BeTrue(), "Expected an IPv4 address in result")
+		Expect(hasIPv6).To(BeTrue(), "Expected an IPv6 address in result")
 
 		// Verify routes are populated for normal pod
 		verifyRoutesPopulatedInResult(result, true)
@@ -355,22 +360,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		AfterEach(func() {
 			// Clean up source pod IP allocation
 			if sourcePodName != "" && sourceCID != "" {
-				netconf := fmt.Sprintf(`{
-					"cniVersion": "%s",
-					"name": "net1",
-					"type": "calico",
-					"etcd_endpoints": "http://%s:2379",
-					"kubernetes": {
-						"kubeconfig": "/home/user/certs/kubeconfig",
-						"k8s_api_root": "https://127.0.0.1:6443"
-					},
-					"datastore_type": "kubernetes",
-					"log_level": "debug",
-					"ipam": {
-						"type": "calico-ipam"
-					}
-				}`, cniVersion, os.Getenv("ETCD_IP"))
-
+				netconf := getDualStackNetconf(cniVersion)
 				sourceCNIArgs := GetCNIArgsForPod(sourcePodName, testNs, sourceCID)
 				testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
 			}
@@ -378,21 +368,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 
 		It("should return empty routes for migration target pod", func() {
 			fmt.Println("\n[TEST] ===== Running test: should return empty routes for migration target pod =====")
-			netconf := fmt.Sprintf(`{
-				"cniVersion": "%s",
-				"name": "net1",
-				"type": "calico",
-				"etcd_endpoints": "http://%s:2379",
-				"kubernetes": {
-					"kubeconfig": "/home/user/certs/kubeconfig",
-					"k8s_api_root": "https://127.0.0.1:6443"
-				},
-				"datastore_type": "kubernetes",
-				"log_level": "debug",
-				"ipam": {
-					"type": "calico-ipam"
-				}
-			}`, cniVersion, os.Getenv("ETCD_IP"))
+			netconf := getDualStackNetconf(cniVersion)
 
 			// Verify source pod is ActiveOwner before migration target ADD
 			verifyOwnerAttributes(
@@ -409,10 +385,10 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 
 			cniArgs := GetCNIArgsForPod(podName, testNs, cid)
 
-			// Run IPAM ADD for migration target
+			// Run IPAM ADD for migration target - should get both existing IPs (IPv4 + IPv6)
 			result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs, cid, cniVersion)
 			Expect(exitCode).To(Equal(0), fmt.Sprintf("IPAM ADD failed: %v", errOut))
-			Expect(result.IPs).To(HaveLen(1))
+			Expect(result.IPs).To(HaveLen(2), "Expected dual-stack: migration target should receive both existing IPs")
 
 			// Verify empty routes for migration target
 			verifyRoutesPopulatedInResult(result, false)
@@ -456,22 +432,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		It("should fail if migration target but KubeVirtVMAddressPersistence is disabled", func() {
 			fmt.Println("\n[TEST] ===== Running test: should fail if migration target but KubeVirtVMAddressPersistence is disabled =====")
 
-			netconf := fmt.Sprintf(`{
-			"cniVersion": "%s",
-			"name": "net1",
-			"type": "calico",
-			"etcd_endpoints": "http://%s:2379",
-			"kubernetes": {
-				"kubeconfig": "/home/user/certs/kubeconfig",
-				"k8s_api_root": "https://127.0.0.1:6443"
-			},
-			"datastore_type": "kubernetes",
-			"log_level": "debug",
-			"ipam": {
-				"type": "calico-ipam"
-			}
-		}`, cniVersion, os.Getenv("ETCD_IP"))
-
+			netconf := getDualStackNetconf(cniVersion)
 			cniArgs := GetCNIArgsForPod(podName, testNs, cid)
 
 			// Run IPAM ADD - should fail
