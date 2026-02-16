@@ -59,6 +59,13 @@ const (
 	AttributeTypeWireguard   = model.IPAMBlockAttributeTypeWireguard
 	AttributeTypeWireguardV6 = model.IPAMBlockAttributeTypeWireguardV6
 
+	// KubeVirt VM pod attributes
+	AttributeVMIName       = model.IPAMBlockAttributeVMIName
+	AttributeVMIUID        = model.IPAMBlockAttributeVMIUID
+	AttributeVMUID         = model.IPAMBlockAttributeVMUID
+	AttributeVMIMUID       = model.IPAMBlockAttributeVMIMUID
+	AttributeMigrationRole = model.IPAMBlockAttributeMigrationRole
+
 	// Host affinity used for Service LoadBalancer
 	loadBalancerAffinityHost = "virtual:load-balancer"
 )

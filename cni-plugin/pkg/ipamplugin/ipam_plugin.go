@@ -165,7 +165,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 			"pod":               epIDs.Pod,
 			"namespace":         epIDs.Namespace,
 			"vmiName":           vmiInfo.GetName(),
-			"vmiUID":            vmiInfo.GetUID(),
+			"vmiUID":            vmiInfo.VMIResource.GetVMIUID(),
 			"isMigrationTarget": vmiInfo.IsMigrationTarget(),
 			"handleID":          handleID,
 		}).Info("Detected KubeVirt virt-launcher pod, using VMI-based handle ID")
@@ -200,7 +200,11 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 	// Add VMI attributes if this is a virt-launcher pod
 	if vmiInfo != nil {
-		attrs["vmi"] = vmiInfo.GetName()
+		attrs[ipam.AttributeVMIName] = vmiInfo.GetName()
+		attrs[ipam.AttributeVMIUID] = vmiInfo.GetVMIUID()
+		if vmUID := vmiInfo.GetVMUID(); vmUID != "" {
+			attrs[ipam.AttributeVMUID] = vmUID
+		}
 
 		// Set migration role based on whether this is a migration target
 		if vmiInfo.IsMigrationTarget() {
@@ -209,25 +213,25 @@ func cmdAdd(args *skel.CmdArgs) error {
 			defer cancel()
 			ipamConfig, err := calicoClient.IPAMConfig().Get(ctx, "default", options.GetOptions{})
 			if err != nil {
-				logger.Errorf("[DEBUG] Failed to get IPAM config: %v", err)
+				logger.WithError(err).Error("Failed to get IPAM config")
 				return fmt.Errorf("failed to get IPAM config: %w", err)
 			}
 
 			// If persistence is explicitly disabled, migration targets are not allowed
 			if ipamConfig.Spec.KubeVirtVMAddressPersistence != nil &&
 				*ipamConfig.Spec.KubeVirtVMAddressPersistence == libapiv3.VMAddressPersistenceDisabled {
-				logger.Errorf("[DEBUG] Live migration target pod rejected: KubeVirtVMAddressPersistence is disabled")
+				logger.Error("Live migration target pod rejected: KubeVirtVMAddressPersistence is disabled")
 				return fmt.Errorf("live migration target pod is not allowed when KubeVirtVMAddressPersistence is disabled")
 			}
 
-			attrs["migration-role"] = "target"
-			attrs["migration-job-uid"] = vmiInfo.GetVMIMigrationUID()
+			attrs[ipam.AttributeMigrationRole] = "alternate"
+			attrs[ipam.AttributeVMIMUID] = vmiInfo.GetVMIMigrationUID()
 
 			// Handle migration target: retrieve existing IP and set AlternateOwnerAttrs
 			return handleMigrationTarget(calicoClient, handleID, attrs, conf, logger)
 		} else {
 			// For source/active pods, use active role
-			attrs["migration-role"] = "active"
+			attrs[ipam.AttributeMigrationRole] = "active"
 		}
 	}
 
@@ -640,7 +644,7 @@ func cmdDel(args *skel.CmdArgs) error {
 			"pod":                   epIDs.Pod,
 			"namespace":             epIDs.Namespace,
 			"vmiName":               vmiInfo.GetName(),
-			"vmiUID":                vmiInfo.GetUID(),
+			"vmiUID":                vmiInfo.VMIResource.GetVMIUID(),
 			"vmiDeletionInProgress": vmiInfo.IsVMObjectDeletionInProgress(),
 			"handleID":              handleID,
 		}).Info("Detected KubeVirt virt-launcher pod deletion")

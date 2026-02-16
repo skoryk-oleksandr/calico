@@ -104,12 +104,21 @@ func (v *VMIResource) GetName() string {
 	return v.Name
 }
 
-// GetUID returns the VMI UID
-func (v *VMIResource) GetUID() string {
+// GetVMIUID returns the VMI UID (explicit name for clarity in KubeVirt IPAM context)
+func (v *VMIResource) GetVMIUID() string {
 	if v == nil {
 		return ""
 	}
 	return v.UID
+}
+
+// GetVMUID returns the UID of the VM object that owns this VMI.
+// Returns empty string if VMOwner is nil (VMI is not owned by a VM).
+func (v *VMIResource) GetVMUID() string {
+	if v == nil || v.VMOwner == nil {
+		return ""
+	}
+	return string(v.VMOwner.UID)
 }
 
 // GetNamespace returns the VMI namespace
