@@ -15,7 +15,9 @@ import (
 	libapiv3 "github.com/projectcalico/calico/libcalico-go/lib/apis/v3"
 	client "github.com/projectcalico/calico/libcalico-go/lib/clientv3"
 	"github.com/projectcalico/calico/libcalico-go/lib/errors"
+	"github.com/projectcalico/calico/libcalico-go/lib/ipam"
 	"github.com/projectcalico/calico/libcalico-go/lib/names"
+	cnet "github.com/projectcalico/calico/libcalico-go/lib/net"
 	"github.com/projectcalico/calico/libcalico-go/lib/options"
 
 	corev1 "k8s.io/api/core/v1"
@@ -27,6 +29,94 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+// GetCNIArgsForPod constructs a CNI_ARGS string matching the format kubelet uses in production.
+// Kubelet always prepends IgnoreUnknown=1 so that CNI/IPAM plugins using cnitypes.LoadArgs
+// with cnitypes.CommonArgs will ignore fields they don't define (e.g., K8S_POD_NAME).
+// Without IgnoreUnknown=1, LoadArgs would fail on any field not present in the plugin's args struct.
+func GetCNIArgsForPod(podName, namespace, containerID string) string {
+	return fmt.Sprintf("IgnoreUnknown=1;K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s;K8S_POD_INFRA_CONTAINER_ID=%s",
+		podName, namespace, containerID)
+}
+
+// verifyOwnerAttributes checks the IPAM owner attributes for all IPs allocated to a VMI handle.
+// It verifies:
+//   - ActiveOwnerAttrs: pod name, namespace, VMI name, VMI UID, VM UID, migration role = "active"
+//   - AlternateOwnerAttrs: if expectAlternate is true, verifies target pod info and migration role = "alternate"
+func verifyOwnerAttributes(
+	calicoClient client.Interface,
+	networkName string,
+	namespace string,
+	vmName string,
+	expectedActivePodName string,
+	expectedVMIUID string,
+	expectedVMUID string,
+	expectedAlternatePodName string,
+	expectedVMIMUID string,
+) {
+	ctx := context.Background()
+	handleID := ipam.CreateVMIHandleID(networkName, namespace, vmName)
+
+	ips, err := calicoClient.IPAM().IPsByHandle(ctx, handleID)
+	Expect(err).NotTo(HaveOccurred(), "Failed to get IPs by handle %s", handleID)
+	Expect(ips).NotTo(BeEmpty(), "No IPs found for handle %s", handleID)
+
+	for _, ip := range ips {
+		allocAttr, err := calicoClient.IPAM().GetAssignmentAttributes(ctx, cnet.IP{IP: ip.IP})
+		Expect(err).NotTo(HaveOccurred(), "Failed to get assignment attributes for IP %s", ip)
+		Expect(allocAttr).NotTo(BeNil(), "No allocation attributes for IP %s", ip)
+
+		fmt.Printf("[TEST] Verifying attributes for IP %s (handle: %s)\n", ip, handleID)
+
+		// Verify ActiveOwnerAttrs
+		Expect(allocAttr.ActiveOwnerAttrs).NotTo(BeNil(), "ActiveOwnerAttrs should not be nil")
+		Expect(allocAttr.ActiveOwnerAttrs[ipam.AttributePod]).To(Equal(expectedActivePodName),
+			"ActiveOwnerAttrs pod name mismatch")
+		Expect(allocAttr.ActiveOwnerAttrs[ipam.AttributeNamespace]).To(Equal(namespace),
+			"ActiveOwnerAttrs namespace mismatch")
+		Expect(allocAttr.ActiveOwnerAttrs[ipam.AttributeVMIName]).To(Equal(vmName),
+			"ActiveOwnerAttrs VMI name mismatch")
+		Expect(allocAttr.ActiveOwnerAttrs[ipam.AttributeVMIUID]).To(Equal(expectedVMIUID),
+			"ActiveOwnerAttrs VMI UID mismatch")
+		Expect(allocAttr.ActiveOwnerAttrs[ipam.AttributeMigrationRole]).To(Equal("active"),
+			"ActiveOwnerAttrs migration role should be 'active'")
+		if expectedVMUID != "" {
+			Expect(allocAttr.ActiveOwnerAttrs[ipam.AttributeVMUID]).To(Equal(expectedVMUID),
+				"ActiveOwnerAttrs VM UID mismatch")
+		}
+
+		// Verify AlternateOwnerAttrs
+		if expectedAlternatePodName != "" {
+			Expect(allocAttr.AlternateOwnerAttrs).NotTo(BeNil(), "AlternateOwnerAttrs should not be nil for migration target")
+			Expect(allocAttr.AlternateOwnerAttrs[ipam.AttributePod]).To(Equal(expectedAlternatePodName),
+				"AlternateOwnerAttrs pod name mismatch")
+			Expect(allocAttr.AlternateOwnerAttrs[ipam.AttributeNamespace]).To(Equal(namespace),
+				"AlternateOwnerAttrs namespace mismatch")
+			Expect(allocAttr.AlternateOwnerAttrs[ipam.AttributeVMIName]).To(Equal(vmName),
+				"AlternateOwnerAttrs VMI name mismatch")
+			Expect(allocAttr.AlternateOwnerAttrs[ipam.AttributeVMIUID]).To(Equal(expectedVMIUID),
+				"AlternateOwnerAttrs VMI UID mismatch")
+			Expect(allocAttr.AlternateOwnerAttrs[ipam.AttributeMigrationRole]).To(Equal("alternate"),
+				"AlternateOwnerAttrs migration role should be 'alternate'")
+			if expectedVMIMUID != "" {
+				Expect(allocAttr.AlternateOwnerAttrs[ipam.AttributeVMIMUID]).To(Equal(expectedVMIMUID),
+					"AlternateOwnerAttrs VMIM UID mismatch")
+			}
+			if expectedVMUID != "" {
+				Expect(allocAttr.AlternateOwnerAttrs[ipam.AttributeVMUID]).To(Equal(expectedVMUID),
+					"AlternateOwnerAttrs VM UID mismatch")
+			}
+		} else {
+			// No migration target expected - AlternateOwnerAttrs should be nil or empty
+			if allocAttr.AlternateOwnerAttrs != nil {
+				Expect(allocAttr.AlternateOwnerAttrs).To(BeEmpty(),
+					"AlternateOwnerAttrs should be empty when no migration target is expected")
+			}
+		}
+
+		fmt.Printf("[TEST] Owner attributes verified for IP %s\n", ip)
+	}
+}
 
 // updateIPAMKubeVirtIPPersistence updates the KubeVirtVMAddressPersistence setting in IPAMConfig
 func updateIPAMKubeVirtIPPersistence(calicoClient client.Interface, persistence *libapiv3.VMAddressPersistence) {
@@ -167,7 +257,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 			}
 		}`, cniVersion, os.Getenv("ETCD_IP"))
 
-		sourceCNIArgs := fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s;K8S_POD_INFRA_CONTAINER_ID=%s", sourcePodName, testNs, sourceCID)
+		sourceCNIArgs := GetCNIArgsForPod(sourcePodName, testNs, sourceCID)
 		result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", sourceCNIArgs, sourceCID, cniVersion)
 		Expect(exitCode).To(Equal(0), fmt.Sprintf("Source pod IPAM ADD failed: %v", errOut))
 		fmt.Printf("[TEST] Source pod allocated IP: %s\n", result.IPs[0].Address.IP.String())
@@ -226,8 +316,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 			}
 		}`, cniVersion, os.Getenv("ETCD_IP"))
 
-		// Set CNI_ARGS with pod info (including K8S_POD_INFRA_CONTAINER_ID)
-		cniArgs := fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s;K8S_POD_INFRA_CONTAINER_ID=%s", podName, testNs, cid)
+		cniArgs := GetCNIArgsForPod(podName, testNs, cid)
 
 		// Run IPAM ADD
 		result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs, cid, cniVersion)
@@ -236,6 +325,19 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 
 		// Verify routes are populated for normal pod
 		verifyRoutesPopulatedInResult(result, true)
+
+		// Verify owner attributes: source pod should be ActiveOwner, no AlternateOwner
+		verifyOwnerAttributes(
+			calicoClient,
+			"net1",      // network name from netconf
+			testNs,      // namespace
+			vmName,      // VMI name (same as VM name)
+			podName,     // expected active pod name
+			virtResourceManager.Resources.VMIUID,
+			virtResourceManager.Resources.VMUID,
+			"", // no alternate pod (not a migration)
+			"", // no VMIM UID
+		)
 
 		// Clean up
 		_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", cniArgs, cid, cniVersion)
@@ -269,7 +371,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 					}
 				}`, cniVersion, os.Getenv("ETCD_IP"))
 
-				sourceCNIArgs := fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s;K8S_POD_INFRA_CONTAINER_ID=%s", sourcePodName, testNs, sourceCID)
+				sourceCNIArgs := GetCNIArgsForPod(sourcePodName, testNs, sourceCID)
 				testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
 			}
 		})
@@ -292,8 +394,20 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 				}
 			}`, cniVersion, os.Getenv("ETCD_IP"))
 
-			// Set CNI_ARGS with pod info (including K8S_POD_INFRA_CONTAINER_ID)
-			cniArgs := fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s;K8S_POD_INFRA_CONTAINER_ID=%s", podName, testNs, cid)
+			// Verify source pod is ActiveOwner before migration target ADD
+			verifyOwnerAttributes(
+				calicoClient,
+				"net1",
+				testNs,
+				vmName,
+				sourcePodName, // source pod is active owner
+				virtResourceManager.Resources.VMIUID,
+				virtResourceManager.Resources.VMUID,
+				"", // no alternate yet
+				"",
+			)
+
+			cniArgs := GetCNIArgsForPod(podName, testNs, cid)
 
 			// Run IPAM ADD for migration target
 			result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs, cid, cniVersion)
@@ -302,6 +416,21 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 
 			// Verify empty routes for migration target
 			verifyRoutesPopulatedInResult(result, false)
+
+			// Verify owner attributes after migration target ADD:
+			// - ActiveOwnerAttrs should still be the source pod
+			// - AlternateOwnerAttrs should now be the target pod
+			verifyOwnerAttributes(
+				calicoClient,
+				"net1",
+				testNs,
+				vmName,
+				sourcePodName, // source pod remains active owner
+				virtResourceManager.Resources.VMIUID,
+				virtResourceManager.Resources.VMUID,
+				podName, // target pod is now alternate owner
+				virtResourceManager.Resources.VMIMUID,
+			)
 
 			// Clean up
 			_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", cniArgs, cid, cniVersion)
@@ -343,8 +472,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 			}
 		}`, cniVersion, os.Getenv("ETCD_IP"))
 
-			// Set CNI_ARGS with pod info (including K8S_POD_INFRA_CONTAINER_ID)
-			cniArgs := fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s;K8S_POD_INFRA_CONTAINER_ID=%s", podName, testNs, cid)
+			cniArgs := GetCNIArgsForPod(podName, testNs, cid)
 
 			// Run IPAM ADD - should fail
 			_, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs, cid, cniVersion)

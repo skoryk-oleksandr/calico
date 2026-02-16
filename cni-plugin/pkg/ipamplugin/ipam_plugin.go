@@ -180,11 +180,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		"HandleID":    handleID,
 	})
 
-	ipamArgs := ipamArgs{
-		CommonArgs: cnitypes.CommonArgs{
-			IgnoreUnknown: cnitypes.UnmarshallableBool(true),
-		},
-	}
+	ipamArgs := ipamArgs{}
 	if err = cnitypes.LoadArgs(args.Args, &ipamArgs); err != nil {
 		return err
 	}
