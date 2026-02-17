@@ -714,10 +714,9 @@ var _ = testutils.E2eDatastoreDescribe("IPAM tests", testutils.DatastoreAll, fun
 		sentinelIP := net.ParseIP("10.0.0.1")
 
 		It("Should return ResourceNotExist on no valid pool", func() {
-			attrs, handle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP}, OwnerAttributeTypeActive)
+			allocAttr, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP})
 			Expect(err).To(BeAssignableToTypeOf(cerrors.ErrorResourceDoesNotExist{}))
-			Expect(attrs).To(BeEmpty())
-			Expect(handle).To(BeNil())
+			Expect(allocAttr).To(BeNil())
 		})
 
 		Context("With valid pool", func() {
@@ -738,10 +737,9 @@ var _ = testutils.E2eDatastoreDescribe("IPAM tests", testutils.DatastoreAll, fun
 			})
 
 			It("Should return ResourceNotExist error on no block", func() {
-				attrs, handle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP}, OwnerAttributeTypeActive)
+				allocAttr, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP})
 				Expect(err).To(BeAssignableToTypeOf(cerrors.ErrorResourceDoesNotExist{}))
-				Expect(attrs).To(BeEmpty())
-				Expect(handle).To(BeNil())
+				Expect(allocAttr).To(BeNil())
 			})
 
 			It("Should return correct attributes on allocated ip", func() {
@@ -759,11 +757,12 @@ var _ = testutils.E2eDatastoreDescribe("IPAM tests", testutils.DatastoreAll, fun
 				err := ic.AssignIP(context.Background(), args)
 				Expect(err).NotTo(HaveOccurred())
 
-				attrs, returnedHandle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP}, OwnerAttributeTypeActive)
+				allocAttr, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(attrs).To(Equal(ipAttr))
-				Expect(returnedHandle).NotTo(BeNil())
-				Expect(*returnedHandle).To(Equal(handle))
+				Expect(allocAttr).NotTo(BeNil())
+				Expect(allocAttr.ActiveOwnerAttrs).To(Equal(ipAttr))
+				Expect(allocAttr.HandleID).NotTo(BeNil())
+				Expect(*allocAttr.HandleID).To(Equal(handle))
 			})
 
 			It("Should return ResourceNotExist on unallocated ip", func() {
@@ -781,10 +780,9 @@ var _ = testutils.E2eDatastoreDescribe("IPAM tests", testutils.DatastoreAll, fun
 				Expect(err).NotTo(HaveOccurred())
 
 				// Block exists but sentinel ip is not allocated.
-				attrs, handle, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP}, OwnerAttributeTypeActive)
+				allocAttr, err := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP})
 				Expect(err).To(BeAssignableToTypeOf(cerrors.ErrorResourceDoesNotExist{}))
-				Expect(attrs).To(BeEmpty())
-				Expect(handle).To(BeNil())
+				Expect(allocAttr).To(BeNil())
 			})
 		})
 	})
@@ -1127,10 +1125,11 @@ var _ = testutils.E2eDatastoreDescribe("IPAM tests", testutils.DatastoreAll, fun
 
 		It("Should be able to re-assign the sentinel IP", func() {
 			assignIPutil(ic, sentinelIP, host)
-			attrs, handle, attrErr := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP}, OwnerAttributeTypeActive)
+			allocAttr, attrErr := ic.GetAssignmentAttributes(context.Background(), cnet.IP{IP: sentinelIP})
 			Expect(attrErr).NotTo(HaveOccurred())
-			Expect(attrs).To(BeEmpty())
-			Expect(handle).To(BeNil())
+			Expect(allocAttr).NotTo(BeNil())
+			Expect(allocAttr.ActiveOwnerAttrs).To(BeEmpty())
+			Expect(allocAttr.HandleID).To(BeNil())
 		})
 
 		It("Should fail to assign any more addresses", func() {
@@ -1280,6 +1279,241 @@ var _ = testutils.E2eDatastoreDescribe("IPAM tests", testutils.DatastoreAll, fun
 			By("Querying the IP by handle and expecting none", func() {
 				_, err := ic.IPsByHandle(ctx, handle)
 				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("IP assignment with MaxAllocPerIPVersion", func() {
+			var hostname string
+			var handle string
+
+			BeforeEach(func() {
+				hostname = "test-host-maxalloc"
+				handle = "vmi-handle-maxalloc"
+
+				Expect(bc.Clean()).To(Succeed())
+				deleteAllPools()
+				applyPool("10.0.0.0/24", true, "")
+				applyPool("fd80:24e2:f998:72d6::/120", true, "")
+				applyNode(bc, kc, hostname, nil)
+			})
+
+			It("should reuse existing IPs when MaxAllocPerIPVersion is reached on a second AutoAssign with the same handle", func() {
+				ctx := context.Background()
+
+				var firstV4IP, firstV6IP cnet.IPNet
+
+				By("first AutoAssign: allocating 1 IPv4 + 1 IPv6 with MaxAllocPerIPVersion=1", func() {
+					args := AutoAssignArgs{
+						Num4:                 1,
+						Num6:                 1,
+						HandleID:             &handle,
+						Hostname:             hostname,
+						IntendedUse:          v3.IPPoolAllowedUseWorkload,
+						MaxAllocPerIPVersion: 1,
+					}
+					v4ia, v6ia, err := ic.AutoAssign(ctx, args)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(v4ia).ToNot(BeNil())
+					Expect(v4ia.IPs).To(HaveLen(1))
+					Expect(v6ia).ToNot(BeNil())
+					Expect(v6ia.IPs).To(HaveLen(1))
+
+					firstV4IP = v4ia.IPs[0]
+					firstV6IP = v6ia.IPs[0]
+				})
+
+				By("verifying handle has exactly 2 IPs (1 IPv4 + 1 IPv6)", func() {
+					ips, err := ic.IPsByHandle(ctx, handle)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(ips).To(HaveLen(2))
+				})
+
+				By("second AutoAssign with the same handle and MaxAllocPerIPVersion=1: should reuse existing IPs", func() {
+					args := AutoAssignArgs{
+						Num4:                 1,
+						Num6:                 1,
+						HandleID:             &handle,
+						Hostname:             hostname,
+						IntendedUse:          v3.IPPoolAllowedUseWorkload,
+						MaxAllocPerIPVersion: 1,
+					}
+					v4ia, v6ia, err := ic.AutoAssign(ctx, args)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(v4ia).ToNot(BeNil())
+					Expect(v4ia.IPs).To(HaveLen(1))
+					Expect(v6ia).ToNot(BeNil())
+					Expect(v6ia.IPs).To(HaveLen(1))
+
+					// The reused IPs should be identical to the first allocation
+					Expect(v4ia.IPs[0].IP.Equal(firstV4IP.IP)).To(BeTrue(),
+						fmt.Sprintf("Expected reused IPv4 %s to match first allocation %s", v4ia.IPs[0].IP, firstV4IP.IP))
+					Expect(v6ia.IPs[0].IP.Equal(firstV6IP.IP)).To(BeTrue(),
+						fmt.Sprintf("Expected reused IPv6 %s to match first allocation %s", v6ia.IPs[0].IP, firstV6IP.IP))
+				})
+
+				By("verifying handle still has exactly 2 IPs after reuse (no duplicates)", func() {
+					ips, err := ic.IPsByHandle(ctx, handle)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(ips).To(HaveLen(2))
+				})
+
+				By("releasing the IPs by handle", func() {
+					err := ic.ReleaseByHandle(ctx, handle)
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				By("verifying handle is empty after release", func() {
+					_, err := ic.IPsByHandle(ctx, handle)
+					Expect(err).To(HaveOccurred())
+				})
+			})
+
+			It("should reuse existing IP when MaxAllocPerIPVersion is reached on a second AssignIP with the same handle", func() {
+				ctx := context.Background()
+
+				requestedIP := cnet.MustParseIP("10.0.0.1")
+
+				By("first AssignIP: assigning a specific IP with MaxAllocPerIPVersion=1", func() {
+					err := ic.AssignIP(ctx, AssignIPArgs{
+						IP:                   requestedIP,
+						HandleID:             &handle,
+						Hostname:             hostname,
+						Attrs:                map[string]string{"pod": "source-pod"},
+						MaxAllocPerIPVersion: 1,
+					})
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				By("verifying handle has exactly 1 IP", func() {
+					ips, err := ic.IPsByHandle(ctx, handle)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(ips).To(HaveLen(1))
+					Expect(ips[0].IP.Equal(requestedIP.IP)).To(BeTrue())
+				})
+
+				By("second AssignIP with the same handle, same IP, and MaxAllocPerIPVersion=1: should succeed (idempotent)", func() {
+					err := ic.AssignIP(ctx, AssignIPArgs{
+						IP:                   requestedIP,
+						HandleID:             &handle,
+						Hostname:             hostname,
+						Attrs:                map[string]string{"pod": "target-pod"},
+						MaxAllocPerIPVersion: 1,
+					})
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				By("verifying handle still has exactly 1 IP after idempotent assign", func() {
+					ips, err := ic.IPsByHandle(ctx, handle)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(ips).To(HaveLen(1))
+					Expect(ips[0].IP.Equal(requestedIP.IP)).To(BeTrue())
+				})
+
+				By("second AssignIP with the same handle but a DIFFERENT IP and MaxAllocPerIPVersion=1: should fail", func() {
+					differentIP := cnet.MustParseIP("10.0.0.2")
+					err := ic.AssignIP(ctx, AssignIPArgs{
+						IP:                   differentIP,
+						HandleID:             &handle,
+						Hostname:             hostname,
+						Attrs:                map[string]string{"pod": "target-pod"},
+						MaxAllocPerIPVersion: 1,
+					})
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("already has IP(s) allocated"))
+				})
+
+				By("releasing the IP by handle", func() {
+					err := ic.ReleaseByHandle(ctx, handle)
+					Expect(err).NotTo(HaveOccurred())
+				})
+			})
+
+			It("should allow two AutoAssigns and reuse on third when MaxAllocPerIPVersion is 2", func() {
+				ctx := context.Background()
+
+				var firstV4IP, secondV4IP cnet.IPNet
+
+				By("first AutoAssign: allocating 1 IPv4 with MaxAllocPerIPVersion=2", func() {
+					args := AutoAssignArgs{
+						Num4:                 1,
+						HandleID:             &handle,
+						Hostname:             hostname,
+						IntendedUse:          v3.IPPoolAllowedUseWorkload,
+						MaxAllocPerIPVersion: 2,
+					}
+					v4ia, _, err := ic.AutoAssign(ctx, args)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(v4ia).ToNot(BeNil())
+					Expect(v4ia.IPs).To(HaveLen(1))
+
+					firstV4IP = v4ia.IPs[0]
+				})
+
+				By("verifying handle has 1 IP", func() {
+					ips, err := ic.IPsByHandle(ctx, handle)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(ips).To(HaveLen(1))
+				})
+
+				By("second AutoAssign: allocating another IPv4 with MaxAllocPerIPVersion=2 - should succeed", func() {
+					args := AutoAssignArgs{
+						Num4:                 1,
+						HandleID:             &handle,
+						Hostname:             hostname,
+						IntendedUse:          v3.IPPoolAllowedUseWorkload,
+						MaxAllocPerIPVersion: 2,
+					}
+					v4ia, _, err := ic.AutoAssign(ctx, args)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(v4ia).ToNot(BeNil())
+					Expect(v4ia.IPs).To(HaveLen(1))
+
+					secondV4IP = v4ia.IPs[0]
+					// Second IP should be different from the first
+					Expect(secondV4IP.IP.Equal(firstV4IP.IP)).To(BeFalse(),
+						fmt.Sprintf("Second IPv4 %s should differ from first %s", secondV4IP.IP, firstV4IP.IP))
+				})
+
+				By("verifying handle has 2 IPs", func() {
+					ips, err := ic.IPsByHandle(ctx, handle)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(ips).To(HaveLen(2))
+				})
+
+				By("third AutoAssign with MaxAllocPerIPVersion=2: should hit limit and reuse existing IPs", func() {
+					args := AutoAssignArgs{
+						Num4:                 1,
+						HandleID:             &handle,
+						Hostname:             hostname,
+						IntendedUse:          v3.IPPoolAllowedUseWorkload,
+						MaxAllocPerIPVersion: 2,
+					}
+					v4ia, _, err := ic.AutoAssign(ctx, args)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(v4ia).ToNot(BeNil())
+					Expect(v4ia.IPs).To(HaveLen(2), "Should return both existing IPs on reuse")
+
+					// Returned IPs should contain both previously allocated IPs
+					returnedIPs := []net.IP{v4ia.IPs[0].IP, v4ia.IPs[1].IP}
+					Expect(returnedIPs).To(ContainElement(firstV4IP.IP))
+					Expect(returnedIPs).To(ContainElement(secondV4IP.IP))
+				})
+
+				By("verifying handle still has exactly 2 IPs (no duplicates)", func() {
+					ips, err := ic.IPsByHandle(ctx, handle)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(ips).To(HaveLen(2))
+				})
+
+				By("releasing the IPs by handle", func() {
+					err := ic.ReleaseByHandle(ctx, handle)
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				By("verifying handle is empty after release", func() {
+					_, err := ic.IPsByHandle(ctx, handle)
+					Expect(err).To(HaveOccurred())
+				})
 			})
 		})
 	})
