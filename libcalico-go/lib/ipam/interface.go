@@ -43,10 +43,11 @@ type Interface interface {
 	// so that they are available to be used in another assignment.
 	ReleaseIPs(ctx context.Context, ips ...ReleaseOptions) ([]cnet.IP, []ReleaseOptions, error)
 
-	// GetAssignmentAttributes returns the attributes stored with the given IP address
-	// for both ActiveOwnerAttrs and AlternateOwnerAttrs, as well as the handle used
-	// for assignment (if any). This provides an atomic snapshot of both attributes.
-	GetAssignmentAttributes(ctx context.Context, addr cnet.IP) (activeAttrs map[string]string, alternateAttrs map[string]string, handle *string, err error)
+	// GetAssignmentAttributes returns the AllocationAttribute for the given IP address,
+	// which includes the handle ID, ActiveOwnerAttrs, and AlternateOwnerAttrs.
+	// This provides an atomic snapshot of all allocation attributes for the IP.
+	// Returns nil if the IP is not assigned.
+	GetAssignmentAttributes(ctx context.Context, addr cnet.IP) (*model.AllocationAttribute, error)
 
 	// IPsByHandle returns a list of all IP addresses that have been
 	// assigned using the provided handle.
@@ -119,9 +120,9 @@ type Interface interface {
 	//     If nil, no verification is performed.
 	//
 	// Use cases:
-	//   - Set AlternateOwnerAttrs only: updates.AttributesAlternateOwner=<target pod attrs>
+	//   - Set AlternateOwnerAttrs only: updates.AlternateOwnerAttrs=<target pod attrs>
 	//   - Clear ActiveOwnerAttrs: updates.ClearActiveOwner=true
-	//   - Swap attributes: updates.AttributesActiveOwner=<current alternate>, updates.AttributesAlternateOwner=<current active>
-	//   - Set both: updates.AttributesActiveOwner=<new active>, updates.AttributesAlternateOwner=<new alternate>
+	//   - Swap attributes: updates.ActiveOwnerAttrs=<current alternate>, updates.AlternateOwnerAttrs=<current active>
+	//   - Set both: updates.ActiveOwnerAttrs=<new active>, updates.AlternateOwnerAttrs=<new alternate>
 	SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID string, updates *OwnerAttributeUpdates, preconditions *OwnerAttributePreconditions) error
 }

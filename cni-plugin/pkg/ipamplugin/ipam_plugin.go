@@ -41,13 +41,14 @@ import (
 	"github.com/projectcalico/calico/cni-plugin/pkg/types"
 	"github.com/projectcalico/calico/cni-plugin/pkg/upgrade"
 	"github.com/projectcalico/calico/libcalico-go/lib/apiconfig"
+	libapiv3 "github.com/projectcalico/calico/libcalico-go/lib/apis/v3"
 	client "github.com/projectcalico/calico/libcalico-go/lib/clientv3"
 	"github.com/projectcalico/calico/libcalico-go/lib/errors"
-	"github.com/projectcalico/calico/libcalico-go/lib/hash"
 	"github.com/projectcalico/calico/libcalico-go/lib/ipam"
 	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 	"github.com/projectcalico/calico/libcalico-go/lib/logutils"
 	cnet "github.com/projectcalico/calico/libcalico-go/lib/net"
+	"github.com/projectcalico/calico/libcalico-go/lib/options"
 )
 
 func Main(version string) {
@@ -164,7 +165,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 			"pod":               epIDs.Pod,
 			"namespace":         epIDs.Namespace,
 			"vmiName":           vmiInfo.GetName(),
-			"vmiUID":            vmiInfo.GetUID(),
+			"vmiUID":            vmiInfo.VMIResource.GetVMIUID(),
 			"isMigrationTarget": vmiInfo.IsMigrationTarget(),
 			"handleID":          handleID,
 		}).Info("Detected KubeVirt virt-launcher pod, using VMI-based handle ID")
@@ -195,35 +196,48 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 	// Add VMI attributes if this is a virt-launcher pod
 	if vmiInfo != nil {
-		attrs["vmi"] = vmiInfo.GetName()
+		attrs[ipam.AttributeVMIName] = vmiInfo.GetName()
+		attrs[ipam.AttributeVMIUID] = vmiInfo.GetVMIUID()
+		if vmUID := vmiInfo.GetVMUID(); vmUID != "" {
+			attrs[ipam.AttributeVMUID] = vmUID
+		}
 
-		// Set migration role based on whether this is a migration target
-		if vmiInfo.IsMigrationTarget() {
+		isMigrationTarget := vmiInfo.IsMigrationTarget()
+		if isMigrationTarget {
 			// Check if VM address persistence is disabled
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			ipamConfig, err := calicoClient.IPAM().GetIPAMConfig(ctx)
+			ipamConfig, err := calicoClient.IPAMConfig().Get(ctx, "default", options.GetOptions{})
 			if err != nil {
+				logger.WithError(err).Error("Failed to get IPAM config")
 				return fmt.Errorf("failed to get IPAM config: %w", err)
 			}
+
 			// If persistence is explicitly disabled, migration targets are not allowed
-			if ipamConfig.KubeVirtVMAddressPersistence != nil &&
-				*ipamConfig.KubeVirtVMAddressPersistence == ipam.VMAddressPersistenceDisabled {
+			if ipamConfig.Spec.KubeVirtVMAddressPersistence != nil &&
+				*ipamConfig.Spec.KubeVirtVMAddressPersistence == libapiv3.VMAddressPersistenceDisabled {
+				logger.Error("Live migration target pod rejected: KubeVirtVMAddressPersistence is disabled")
 				return fmt.Errorf("live migration target pod is not allowed when KubeVirtVMAddressPersistence is disabled")
 			}
 
-			attrs["migration-role"] = "target"
-			attrs["migration-job-uid"] = vmiInfo.GetVMIMigrationUID()
+			attrs[ipam.AttributeVMIMUID] = vmiInfo.GetVMIMigrationUID()
 			attrs[ipam.AttributeVMIName] = vmiInfo.GetName()
 			attrs[ipam.AttributeVMName] = vmiInfo.VMOwner.Name
 			attrs[ipam.AttributeVMUID] = string(vmiInfo.VMOwner.UID)
-
-			// Handle migration target: retrieve existing IP and set AlternateOwnerAttrs
-			return handleMigrationTarget(calicoClient, handleID, attrs, conf, logger)
-		} else {
-			// For source/active pods, use active role
-			attrs["migration-role"] = "active"
 		}
+
+		// Check if IPs already exist for this VMI handle and reuse them.
+		// - Source pod: reuses IPs from a previous pod with the same VMI (pod recreation).
+		//   If no IPs exist, falls through to normal AutoAssign.
+		// - Migration target: IPs must exist (allocated by the source pod).
+		reuseExistingIPs, err := handleVirtLauncherPod(calicoClient, handleID, attrs, conf, logger, isMigrationTarget)
+		if err != nil {
+			return err
+		}
+		if reuseExistingIPs {
+			return nil
+		}
+		// Source pod with no existing IPs - fall through to normal allocation
 	}
 
 	r := &cniv1.Result{}
@@ -541,20 +555,13 @@ func acquireIPAMLockBestEffort(path string) unlockFn {
 }
 
 // createVMIHandleID creates a handle ID for a KubeVirt VMI pod based on namespace and VMI name.
-// The handle ID format is: <networkName>.vmi<suffix> or <networkName>.vmi_<hash> if suffix is too long
+// The handle ID format is: <networkName>.vmi.<namespace>.<vmiName> (length-limited to 128 chars)
 // This ensures IP persistence across VMI pod recreations and live migrations since
 // the VMI name and namespace remain stable (VM and VMI share the same name).
-// Uses GetLengthLimitedID to keep the namespace/name unhashed if short enough, otherwise hashes it.
+// This function delegates to ipam.CreateVMIHandleID to ensure consistent handle generation
+// across CNI plugin and Felix.
 func createVMIHandleID(confName string, vmiInfo *kubevirt.PodVMIInfo) string {
-	// Create suffix from namespace and VMI name
-	suffix := fmt.Sprintf("%s/%s", vmiInfo.GetNamespace(), vmiInfo.GetName())
-
-	// Build prefix: networkName.vmi
-	prefix := fmt.Sprintf("%s.vmi", confName)
-
-	// Use GetLengthLimitedID with max length 128
-	// This will keep the suffix unhashed if it fits, otherwise hash and truncate
-	return hash.GetLengthLimitedID(prefix, suffix, 128)
+	return ipam.CreateVMIHandleID(confName, vmiInfo.GetNamespace(), vmiInfo.GetName())
 }
 
 // getVMIInfoForPod retrieves KubeVirt VirtualMachineInstance (VMI) information for a given pod.
@@ -642,8 +649,10 @@ func cmdDel(args *skel.CmdArgs) error {
 			"pod":                   epIDs.Pod,
 			"namespace":             epIDs.Namespace,
 			"vmiName":               vmiInfo.GetName(),
-			"vmiUID":                vmiInfo.GetUID(),
-			"vmiDeletionInProgress": vmiInfo.IsVMObjectDeletionInProgress(),
+			"vmiUID":                vmiInfo.VMIResource.GetVMIUID(),
+			"vmDeletionInProgress":  vmiInfo.VMIResource.IsVMObjectDeletionInProgress(),
+			"vmiDeletionInProgress": vmiInfo.VMIResource.IsVMIObjectDeletionInProgress(),
+			"hasVMOwner":            vmiInfo.VMIResource.VMOwner != nil,
 			"handleID":              handleID,
 		}).Info("Detected KubeVirt virt-launcher pod deletion")
 	} else {
@@ -669,10 +678,23 @@ func cmdDel(args *skel.CmdArgs) error {
 	unlock := acquireIPAMLockBestEffort(conf.IPAMLockFile)
 	defer unlock()
 
-	// For VMI pods, handle deletion based on VM status
+	// For VMI pods, handle deletion based on VM/VMI deletion status.
+	// IP persistence is only maintained while the VM (or standalone VMI) is alive.
+	// - If VMI is owned by a VM: release when VM has DeletionTimestamp
+	// - If VMI is standalone (no VM owner): release when VMI has DeletionTimestamp
 	if vmiInfo != nil {
-		vmDeletionInProgress := vmiInfo.IsVMObjectDeletionInProgress()
-		logger.WithField("vmDeletionInProgress", vmDeletionInProgress).Info("Processing VMI pod deletion")
+		shouldRelease := false
+		if vmiInfo.VMIResource.VMOwner != nil {
+			// VMI is owned by a VM - check VM deletion status
+			shouldRelease = vmiInfo.VMIResource.IsVMObjectDeletionInProgress()
+		} else {
+			// Standalone VMI (no VM owner) - check VMI deletion status
+			shouldRelease = vmiInfo.VMIResource.IsVMIObjectDeletionInProgress()
+		}
+		logger.WithFields(logrus.Fields{
+			"shouldRelease": shouldRelease,
+			"hasVMOwner":    vmiInfo.VMIResource.VMOwner != nil,
+		}).Info("Processing VMI pod deletion")
 
 		// Get IPs allocated to this handle so we can clear their attributes
 		ips, err := calicoClient.IPAM().IPsByHandle(ctx, handleID)
@@ -691,16 +713,16 @@ func cmdDel(args *skel.CmdArgs) error {
 		for _, ip := range ips {
 			logger.WithField("ip", ip).Info("Attempting to clear pod attributes")
 
-			// Get current ActiveOwnerAttrs and AlternateOwnerAttrs
-			activeAttrs, alternateAttrs, _, err := calicoClient.IPAM().GetAssignmentAttributes(ctx, ip)
+			// Get current AllocationAttribute
+			attr, err := calicoClient.IPAM().GetAssignmentAttributes(ctx, ip)
 			if err != nil {
 				logger.WithError(err).WithField("ip", ip).Warn("Failed to get assignment attributes, skipping attribute cleanup")
 				continue
 			}
 
 			// Check which attribute owner matches this pod using MatchAttributeOwner
-			activeMatches := ipam.MatchAttributeOwner(activeAttrs, expectedOwner)
-			alternateMatches := ipam.MatchAttributeOwner(alternateAttrs, expectedOwner)
+			activeMatches := ipam.MatchAttributeOwner(attr.ActiveOwnerAttrs, expectedOwner)
+			alternateMatches := ipam.MatchAttributeOwner(attr.AlternateOwnerAttrs, expectedOwner)
 
 			// Prepare updates and preconditions based on which owner type matches
 			var updates *ipam.OwnerAttributeUpdates
@@ -754,27 +776,27 @@ func cmdDel(args *skel.CmdArgs) error {
 		// Second pass: Check if any owner attributes remain after clearing this pod's attributes
 		anyOwnerAttributesRemain := false
 		for _, ip := range ips {
-			activeAttrs, alternateAttrs, _, err := calicoClient.IPAM().GetAssignmentAttributes(ctx, ip)
+			attr, err := calicoClient.IPAM().GetAssignmentAttributes(ctx, ip)
 			if err != nil {
 				logger.WithError(err).WithField("ip", ip).Error("Failed to get assignment attributes for post-cleanup check")
 				return fmt.Errorf("failed to verify owner attributes after cleanup for IP %s: %w", ip, err)
 			}
 
 			// Check if any owner attributes exist
-			if activeAttrs != nil || alternateAttrs != nil {
+			if attr.ActiveOwnerAttrs != nil || attr.AlternateOwnerAttrs != nil {
 				anyOwnerAttributesRemain = true
 				logger.WithFields(logrus.Fields{
 					"ip":                ip,
-					"hasActiveOwner":    activeAttrs != nil,
-					"hasAlternateOwner": alternateAttrs != nil,
+					"hasActiveOwner":    attr.ActiveOwnerAttrs != nil,
+					"hasAlternateOwner": attr.AlternateOwnerAttrs != nil,
 				}).Debug("Owner attributes still exist for this IP")
 				break // No need to check remaining IPs
 			}
 		}
 
-		// Only release the handle if VM deletion is in progress AND all IPs have empty owner attributes
-		if vmDeletionInProgress && !anyOwnerAttributesRemain {
-			logger.Info("VM deletion in progress and all owner attributes empty - releasing IP by handle")
+		// Only release the handle if the VM/VMI is being deleted AND all IPs have empty owner attributes
+		if shouldRelease && !anyOwnerAttributesRemain {
+			logger.Info("VM/VMI deletion in progress and all owner attributes empty - releasing IP by handle")
 			if err := calicoClient.IPAM().ReleaseByHandle(ctx, handleID); err != nil {
 				if _, ok := err.(errors.ErrorResourceDoesNotExist); !ok {
 					logger.WithError(err).Error("Failed to release address")
@@ -786,7 +808,7 @@ func cmdDel(args *skel.CmdArgs) error {
 			}
 		} else {
 			logger.WithFields(logrus.Fields{
-				"vmDeletionInProgress":     vmDeletionInProgress,
+				"shouldRelease":            shouldRelease,
 				"anyOwnerAttributesRemain": anyOwnerAttributesRemain,
 			}).Info("Completed attribute cleanup - IP remains allocated to VMI")
 		}
@@ -849,66 +871,91 @@ func getNamespace(conf types.NetConf, namespace string, logger *logrus.Entry) (*
 // handleMigrationTarget handles CNI ADD for a migration target pod.
 // For migration targets, the IP(s) must already exist (allocated by source pod to VMI handle).
 // This function retrieves the existing IP(s) and sets AlternateOwnerAttrs with target pod info.
-func handleMigrationTarget(calicoClient client.Interface, handleID string, attrs map[string]string, conf types.NetConf, logger *logrus.Entry) error {
-	logger.Info("Migration target pod detected - retrieving existing IPs from VMI handle")
-
-	// For migration target, the IP(s) must already be allocated to the VMI handle by the source pod
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+// handleVirtLauncherPod handles IP allocation for KubeVirt virt-launcher pods by checking
+// if IPs are already allocated to the VMI handle and reusing them.
+//
+// For source pods (isMigrationTarget=false):
+//   - If existing IPs found: reuses them and sets ActiveOwnerAttrs. Returns (true, nil).
+//   - If no existing IPs: returns (false, nil) so the caller proceeds with normal AutoAssign.
+//
+// For migration target pods (isMigrationTarget=true):
+//   - Existing IPs must already be allocated by the source pod.
+//   - Sets AlternateOwnerAttrs (unconditionally, to handle back-to-back migrations).
+//   - Returns empty routes so CNI skips host-side route programming.
+//   - Returns (true, nil) on success, (false, error) if IPs are missing.
+func handleVirtLauncherPod(calicoClient client.Interface, handleID string, attrs map[string]string, conf types.NetConf, logger *logrus.Entry, isMigrationTarget bool) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	existingIPs, err := calicoClient.IPAM().IPsByHandle(ctx, handleID)
-	if err != nil {
-		logger.WithError(err).Error("Failed to get existing IPs for migration target")
-		return fmt.Errorf("migration target pod but no IP allocated to VMI handle %s: %w", handleID, err)
-	}
-
-	if len(existingIPs) == 0 {
-		logger.Error("Migration target pod but VMI handle has no allocated IPs")
-		return fmt.Errorf("migration target pod but no IP allocated to VMI handle %s", handleID)
-	}
-
-	logger.WithField("ipCount", len(existingIPs)).Info("Found existing IPs for migration target")
-
-	// Update AlternateOwnerAttrs for all IPs (handles dual-stack with both IPv4 and IPv6)
-	// No preconditions are used - we unconditionally overwrite any existing AlternateOwnerAttrs:
-	// - AlternateOwnerAttrs may be empty (no previous migration)
-	// - AlternateOwnerAttrs may contain the previous target pod (back-to-back migrations)
-	for _, existingIP := range existingIPs {
-		logger.WithField("ip", existingIP.IP).Info("Setting AlternateOwnerAttrs for IP")
-
-		// Set AlternateOwnerAttrs only (don't modify ActiveOwnerAttrs)
-		updates := &ipam.OwnerAttributeUpdates{
-			AttributesAlternateOwner: attrs,
+	if err != nil || len(existingIPs) == 0 {
+		if isMigrationTarget {
+			// Migration target requires existing IPs allocated by the source pod
+			if err != nil {
+				logger.WithError(err).Error("Failed to get existing IPs for migration target")
+				return false, fmt.Errorf("migration target pod but no IP allocated to VMI handle %s: %w", handleID, err)
+			}
+			logger.Error("Migration target pod but VMI handle has no allocated IPs")
+			return false, fmt.Errorf("migration target pod but no IP allocated to VMI handle %s", handleID)
 		}
-		err = calicoClient.IPAM().SetOwnerAttributes(ctx, existingIP, handleID, updates, nil)
+		// Source pod with no existing IPs - fall through to normal AutoAssign
 		if err != nil {
-			logger.WithError(err).WithField("ip", existingIP.IP).Error("Failed to set AlternateOwnerAttrs")
-			return fmt.Errorf("failed to set AlternateOwnerAttrs for IP %s: %w", existingIP.IP, err)
+			logger.WithError(err).Debug("No existing IPs for VMI handle, proceeding with new allocation")
 		}
+		return false, nil
 	}
 
-	logger.Info("Successfully set AlternateOwnerAttrs for all IPs")
+	logger.WithFields(logrus.Fields{
+		"ipCount":           len(existingIPs),
+		"isMigrationTarget": isMigrationTarget,
+	}).Info("Found existing IPs for VMI handle, reusing them")
 
-	// Build and return the result with all existing IPs
+	// Build result IPs and update owner attributes for each IP
 	r := &cniv1.Result{}
-	for _, existingIP := range existingIPs {
-		if existingIP.IP.To4() == nil {
-			// IPv6
-			ipNetwork := net.IPNet{IP: existingIP.IP, Mask: net.CIDRMask(128, 128)}
-			r.IPs = append(r.IPs, &cniv1.IPConfig{Address: ipNetwork})
-			logger.WithField("ipv6", existingIP.IP).Info("Added IPv6 to result")
+	for _, ip := range existingIPs {
+		var mask net.IPMask
+		if ip.IP.To4() != nil {
+			mask = net.CIDRMask(32, 32)
 		} else {
-			// IPv4
-			ipNetwork := net.IPNet{IP: existingIP.IP, Mask: net.CIDRMask(32, 32)}
-			r.IPs = append(r.IPs, &cniv1.IPConfig{Address: ipNetwork})
-			logger.WithField("ipv4", existingIP.IP).Info("Added IPv4 to result")
+			mask = net.CIDRMask(128, 128)
+		}
+		r.IPs = append(r.IPs, &cniv1.IPConfig{
+			Address: net.IPNet{IP: ip.IP, Mask: mask},
+		})
+
+		// Source pod: set ActiveOwnerAttrs; Migration target: set AlternateOwnerAttrs
+		var updates *ipam.OwnerAttributeUpdates
+		if isMigrationTarget {
+			updates = &ipam.OwnerAttributeUpdates{
+				AlternateOwnerAttrs: attrs,
+			}
+		} else {
+			updates = &ipam.OwnerAttributeUpdates{
+				ActiveOwnerAttrs: attrs,
+			}
+		}
+		err = calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, updates, nil)
+		if err != nil {
+			logger.WithError(err).Errorf("Failed to set owner attributes for IP %s", ip)
+			return false, fmt.Errorf("failed to set owner attributes for IP %s: %w", ip, err)
 		}
 	}
 
-	// Migration target: return empty routes to skip route programming
-	// The source pod keeps the route until migration completes, then Felix updates it
-	r.Routes = []*cnitypes.Route{}
-	logger.Info("Migration target pod: returning empty routes to skip route programming")
+	// Set routes based on pod role:
+	// - Source pod: one route per IP so CNI programs host-side routes
+	// - Migration target: empty routes to skip route programming (source pod keeps the route
+	//   until migration completes, then Felix updates it)
+	if isMigrationTarget {
+		r.Routes = []*cnitypes.Route{}
+		logger.Info("Migration target pod: returning existing IPs with empty routes")
+	} else {
+		for _, ipConfig := range r.IPs {
+			r.Routes = append(r.Routes, &cnitypes.Route{
+				Dst: ipConfig.Address,
+			})
+		}
+		logger.Info("Source pod: returning existing IPs with routes")
+	}
 
-	return cnitypes.PrintResult(r, conf.CNIVersion)
+	return true, cnitypes.PrintResult(r, conf.CNIVersion)
 }

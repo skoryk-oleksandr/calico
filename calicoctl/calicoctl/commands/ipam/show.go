@@ -145,7 +145,7 @@ func showBorrowedDetails(ctx context.Context, ippoolClient clientv3.IPPoolInterf
 
 func showIP(ctx context.Context, ipamClient ipam.Interface, passedIP interface{}) error {
 	ip := argutils.ValidateIP(passedIP.(string))
-	attr, _, err := ipamClient.GetAssignmentAttributes(ctx, ip, ipam.OwnerAttributeTypeActive)
+	allocAttr, err := ipamClient.GetAssignmentAttributes(ctx, ip)
 	if err != nil {
 		if _, ok := err.(cerrors.ErrorResourceDoesNotExist); ok {
 			// IP address is not assigned.  The detailed error message here is either
@@ -160,6 +160,7 @@ func showIP(ctx context.Context, ipamClient ipam.Interface, passedIP interface{}
 
 	// IP address is assigned.
 	fmt.Printf("IP %s is in use\n", ip)
+	attr := allocAttr.ActiveOwnerAttrs
 	if len(attr) != 0 {
 		fmt.Println("Attributes:")
 		for k, v := range attr {

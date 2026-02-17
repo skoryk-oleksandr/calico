@@ -18,7 +18,6 @@ import (
 	"context"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	kubevirtv1 "kubevirt.io/api/core/v1"
 )
 

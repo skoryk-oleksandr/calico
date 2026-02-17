@@ -46,7 +46,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	kubevirtv1 "kubevirt.io/api/core/v1"
 )
 
@@ -82,6 +81,8 @@ type VMIResource struct {
 	Namespace string
 	// UID is the VMI UID
 	UID string
+	// DeletionTimestamp is the VMI's deletion timestamp (nil if not being deleted)
+	DeletionTimestamp *metav1.Time
 	// VMOwner is a pointer to the VirtualMachine resource that owns this VMI (if any)
 	// This is populated if the VMI has an ownerReference pointing to a VM object
 	// nil if the VMI is not owned by a VM
@@ -97,6 +98,14 @@ func (v *VMIResource) IsVMObjectDeletionInProgress() bool {
 	return v.VMOwner.DeletionTimestamp != nil && !v.VMOwner.DeletionTimestamp.IsZero()
 }
 
+// IsVMIObjectDeletionInProgress returns true if the VMI has a deletion timestamp set
+func (v *VMIResource) IsVMIObjectDeletionInProgress() bool {
+	if v == nil {
+		return false
+	}
+	return v.DeletionTimestamp != nil && !v.DeletionTimestamp.IsZero()
+}
+
 // GetName returns the VMI name
 func (v *VMIResource) GetName() string {
 	if v == nil {
@@ -105,12 +114,21 @@ func (v *VMIResource) GetName() string {
 	return v.Name
 }
 
-// GetUID returns the VMI UID
-func (v *VMIResource) GetUID() string {
+// GetVMIUID returns the VMI UID (explicit name for clarity in KubeVirt IPAM context)
+func (v *VMIResource) GetVMIUID() string {
 	if v == nil {
 		return ""
 	}
 	return v.UID
+}
+
+// GetVMUID returns the UID of the VM object that owns this VMI.
+// Returns empty string if VMOwner is nil (VMI is not owned by a VM).
+func (v *VMIResource) GetVMUID() string {
+	if v == nil || v.VMOwner == nil {
+		return ""
+	}
+	return string(v.VMOwner.UID)
 }
 
 // GetNamespace returns the VMI namespace
@@ -261,10 +279,11 @@ func GetVMIResourceByName(ctx context.Context, virtClient VirtClientInterface, n
 	}
 
 	vmiResource := &VMIResource{
-		Name:      vmi.Name,
-		Namespace: vmi.Namespace,
-		UID:       string(vmi.UID),
-		VMOwner:   nil,
+		Name:              vmi.Name,
+		Namespace:         vmi.Namespace,
+		UID:               string(vmi.UID),
+		DeletionTimestamp: vmi.DeletionTimestamp,
+		VMOwner:           nil,
 	}
 
 	// Check if VMI has an ownerReference pointing to a VirtualMachine
