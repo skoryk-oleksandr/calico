@@ -81,6 +81,8 @@ type VMIResource struct {
 	Namespace string
 	// UID is the VMI UID
 	UID string
+	// DeletionTimestamp is the VMI's deletion timestamp (nil if not being deleted)
+	DeletionTimestamp *metav1.Time
 	// VMOwner is a pointer to the VirtualMachine resource that owns this VMI (if any)
 	// This is populated if the VMI has an ownerReference pointing to a VM object
 	// nil if the VMI is not owned by a VM
@@ -94,6 +96,14 @@ func (v *VMIResource) IsVMObjectDeletionInProgress() bool {
 		return false
 	}
 	return v.VMOwner.DeletionTimestamp != nil && !v.VMOwner.DeletionTimestamp.IsZero()
+}
+
+// IsVMIObjectDeletionInProgress returns true if the VMI has a deletion timestamp set
+func (v *VMIResource) IsVMIObjectDeletionInProgress() bool {
+	if v == nil {
+		return false
+	}
+	return v.DeletionTimestamp != nil && !v.DeletionTimestamp.IsZero()
 }
 
 // GetName returns the VMI name
@@ -269,10 +279,11 @@ func GetVMIResourceByName(ctx context.Context, virtClient VirtClientInterface, n
 	}
 
 	vmiResource := &VMIResource{
-		Name:      vmi.Name,
-		Namespace: vmi.Namespace,
-		UID:       string(vmi.UID),
-		VMOwner:   nil,
+		Name:              vmi.Name,
+		Namespace:         vmi.Namespace,
+		UID:               string(vmi.UID),
+		DeletionTimestamp: vmi.DeletionTimestamp,
+		VMOwner:           nil,
 	}
 
 	// Check if VMI has an ownerReference pointing to a VirtualMachine

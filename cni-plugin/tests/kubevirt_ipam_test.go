@@ -311,29 +311,19 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
-	// setupMigrationTarget creates VMIM and target pod for migration testing.
-	// Assumes VM, VMI, and source pod with IPs are already created by the outer BeforeEach.
-	setupMigrationTarget := func() string {
-		fmt.Printf("\n[TEST] ===== Setting up migration target =====\n")
-
-		// Create VMIM
-		migrationUID := virtResourceManager.CreateVMIM("test-migration")
-
-		// Create target pod with migration label
-		podName = "virt-launcher-" + vmName + "-target"
-		virtResourceManager.CreateVirtLauncherPod(podName, migrationUID)
-
-		fmt.Println("[TEST] Migration target setup completed - target pod created")
-		return migrationUID
-	}
-
-	BeforeEach(func() {
-		initialiseTestInfra()
-
-		// Common setup: Create VM, VMI, first virt-launcher pod and allocate dual-stack IPs.
-		// All test contexts share this base state.
-		virtResourceManager.CreateVM()
-		virtResourceManager.CreateVMI(false, "")
+	// setupSourceVirtLauncherPod creates the VMI (and optionally VM), source virt-launcher pod,
+	// allocates dual-stack IPs, and verifies owner attributes.
+	// If standalone is true, creates a standalone VMI without a VM owner.
+	// If standalone is false, creates a VM and a VMI owned by that VM.
+	setupSourceVirtLauncherPod := func(standalone bool) {
+		if standalone {
+			fmt.Println("[TEST] Setting up standalone VMI (no VM owner)")
+			virtResourceManager.CreateStandaloneVMI()
+		} else {
+			fmt.Println("[TEST] Setting up VM-owned VMI")
+			virtResourceManager.CreateVM()
+			virtResourceManager.CreateVMI(false, "")
+		}
 
 		sourcePodName = "virt-launcher-" + vmName + "-source"
 		sourceCID = uuid.NewString()
@@ -360,6 +350,26 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
 			sourcePodName, virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
 			"", "")
+	}
+
+	// setupMigrationTarget creates VMIM and target pod for migration testing.
+	// Assumes VM, VMI, and source pod with IPs are already created via setupSourceVirtLauncherPod(false).
+	setupMigrationTarget := func() string {
+		fmt.Printf("\n[TEST] ===== Setting up migration target =====\n")
+
+		// Create VMIM
+		migrationUID := virtResourceManager.CreateVMIM("test-migration")
+
+		// Create target pod with migration label
+		podName = "virt-launcher-" + vmName + "-target"
+		virtResourceManager.CreateVirtLauncherPod(podName, migrationUID)
+
+		fmt.Println("[TEST] Migration target setup completed - target pod created")
+		return migrationUID
+	}
+
+	BeforeEach(func() {
+		initialiseTestInfra()
 	})
 
 	AfterEach(func() {
@@ -382,6 +392,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		Context("on pod recreation", func() {
 			It("should retain IPs when virt-launcher pod is deleted and recreated with same VMI", func() {
 				fmt.Println("\n[TEST] ===== Running test: IP persistence on pod recreation =====")
+				setupSourceVirtLauncherPod(false)
 
 				// Step 1: IPAM DEL for source pod - clears owner attrs but IPs stay allocated
 				_, _, exitCode := testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
@@ -426,6 +437,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		Context("on live migration", func() {
 			It("should retain IPs during live migration and clean up owners on pod deletion", func() {
 				fmt.Println("\n[TEST] ===== Running test: IP persistence on live migration =====")
+				setupSourceVirtLauncherPod(false)
 
 				// Step 1: Add migration target pod, verify IPs are persistent,
 				// verify owner attributes (source=active, target=alternate), and verify empty routes
@@ -473,6 +485,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		Context("on VMI recreation", func() {
 			It("should retain IPs when VMI is deleted and recreated", func() {
 				fmt.Println("\n[TEST] ===== Running test: IP persistence on VMI recreation =====")
+				setupSourceVirtLauncherPod(false)
 				oldVMIUID := virtResourceManager.Resources.VMIUID
 
 				// Step 1: Delete VMI (simulating VMI recycling by VM controller)
@@ -521,6 +534,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		Context("IP release", func() {
 			It("should not release handle when source pod is deleted without VM deletion", func() {
 				fmt.Println("\n[TEST] ===== Running test: IP release - no release on pod deletion without VM deletion =====")
+				setupSourceVirtLauncherPod(false)
 
 				// IPAM DEL for source pod - clears owner attrs but VM is not being deleted
 				_, _, exitCode := testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
@@ -533,6 +547,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 
 			It("should not release handle when VMI has deletion timestamp", func() {
 				fmt.Println("\n[TEST] ===== Running test: IP release - no release on VMI deletion =====")
+				setupSourceVirtLauncherPod(false)
 
 				// Set deletion timestamp on VMI (not VM)
 				virtResourceManager.SetVMIDeletionTimestamp()
@@ -548,6 +563,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 
 			It("should release handle when VM has deletion timestamp and pod is deleted", func() {
 				fmt.Println("\n[TEST] ===== Running test: IP release - release on VM deletion =====")
+				setupSourceVirtLauncherPod(false)
 
 				// Set deletion timestamp on VM
 				virtResourceManager.SetVMDeletionTimestamp()
@@ -562,6 +578,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 
 			It("should release handle when both owners are deleted with VM deleting (source first)", func() {
 				fmt.Println("\n[TEST] ===== Running test: IP release - both owners deleted, source first =====")
+				setupSourceVirtLauncherPod(false)
 
 				// Step 1: Add migration target pod
 				setupMigrationTarget()
@@ -593,6 +610,7 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 
 			It("should release handle when both owners are deleted with VM deleting (target first)", func() {
 				fmt.Println("\n[TEST] ===== Running test: IP release - both owners deleted, target first =====")
+				setupSourceVirtLauncherPod(false)
 
 				// Step 1: Add migration target pod
 				setupMigrationTarget()
@@ -621,13 +639,29 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 				Expect(exitCode).To(Equal(0))
 				verifyHandleReleased(calicoClient, "net1", testNs, vmName)
 			})
+
+			It("should release handle when standalone VMI has deletion timestamp and pod is deleted", func() {
+				fmt.Println("\n[TEST] ===== Running test: IP release - standalone VMI with deletion timestamp =====")
+				setupSourceVirtLauncherPod(true)
+
+				// Set VMI deletion timestamp (no VM to delete, VMI itself is being deleted)
+				virtResourceManager.SetVMIDeletionTimestamp()
+
+				// IPAM DEL - standalone VMI is deleting and all owners will be cleared → release
+				_, _, exitCode := testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
+				Expect(exitCode).To(Equal(0))
+
+				// Verify handle is released
+				verifyHandleReleased(calicoClient, "net1", testNs, vmName)
+			})
 		})
 	})
 
 	Context("KubeVirt VM persistence disabled", func() {
 		BeforeEach(func() {
+			setupSourceVirtLauncherPod(false)
+
 			// Set IPAMConfig to disable VM address persistence.
-			// Parent BeforeEach already created VM, VMI, and source pod with IPs.
 			updateIPAMKubeVirtIPPersistence(calicoClient, vmAddressPersistencePtr(libapiv3.VMAddressPersistenceDisabled))
 
 			// Set up migration target (VMIM + target pod)
@@ -789,6 +823,47 @@ func (h *KubeVirtResourceManager) CreateVMI(withMigration bool, migrationUID str
 		return err
 	}, "5s", "100ms").Should(BeNil())
 	fmt.Printf("[TEST] VMI is now retrievable: %s/%s with UID: %s\n", h.testNs, h.vmName, h.Resources.VMIUID)
+}
+
+// CreateStandaloneVMI creates a VirtualMachineInstance resource without a VM owner.
+// This simulates a standalone VMI that was created directly (not via a VirtualMachine object).
+func (h *KubeVirtResourceManager) CreateStandaloneVMI() {
+	vmiObj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "kubevirt.io/v1",
+			"kind":       "VirtualMachineInstance",
+			"metadata": map[string]interface{}{
+				"name":      h.vmName,
+				"namespace": h.testNs,
+			},
+			"spec": map[string]interface{}{},
+			"status": map[string]interface{}{
+				"activePods": map[string]interface{}{
+					"pod-" + uuid.NewString(): "node1",
+				},
+			},
+		},
+	}
+
+	gvr := schema.GroupVersionResource{
+		Group:    "kubevirt.io",
+		Version:  "v1",
+		Resource: "virtualmachineinstances",
+	}
+
+	createdVMI, err := h.dynamicClient.Resource(gvr).Namespace(h.testNs).Create(context.Background(), vmiObj, metav1.CreateOptions{})
+	Expect(err).NotTo(HaveOccurred())
+
+	h.Resources.VMIUID = string(createdVMI.GetUID())
+	fmt.Printf("[TEST] Standalone VMI created successfully: %s/%s (actual UID from K8s: %s, no VM owner)\n", h.testNs, h.vmName, h.Resources.VMIUID)
+
+	// Wait for VMI to be retrievable
+	fmt.Printf("[TEST] Waiting for standalone VMI to be retrievable...\n")
+	Eventually(func() error {
+		_, err := h.dynamicClient.Resource(gvr).Namespace(h.testNs).Get(context.Background(), h.vmName, metav1.GetOptions{})
+		return err
+	}, "5s", "100ms").Should(BeNil())
+	fmt.Printf("[TEST] Standalone VMI is now retrievable: %s/%s with UID: %s\n", h.testNs, h.vmName, h.Resources.VMIUID)
 }
 
 // CreateVirtLauncherPod creates a virt-launcher pod

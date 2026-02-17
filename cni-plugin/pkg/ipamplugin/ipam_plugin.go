@@ -647,7 +647,9 @@ func cmdDel(args *skel.CmdArgs) error {
 			"namespace":             epIDs.Namespace,
 			"vmiName":               vmiInfo.GetName(),
 			"vmiUID":                vmiInfo.VMIResource.GetVMIUID(),
-			"vmiDeletionInProgress": vmiInfo.IsVMObjectDeletionInProgress(),
+			"vmDeletionInProgress":  vmiInfo.VMIResource.IsVMObjectDeletionInProgress(),
+			"vmiDeletionInProgress": vmiInfo.VMIResource.IsVMIObjectDeletionInProgress(),
+			"hasVMOwner":            vmiInfo.VMIResource.VMOwner != nil,
 			"handleID":              handleID,
 		}).Info("Detected KubeVirt virt-launcher pod deletion")
 	} else {
@@ -673,10 +675,23 @@ func cmdDel(args *skel.CmdArgs) error {
 	unlock := acquireIPAMLockBestEffort(conf.IPAMLockFile)
 	defer unlock()
 
-	// For VMI pods, handle deletion based on VM status
+	// For VMI pods, handle deletion based on VM/VMI deletion status.
+	// IP persistence is only maintained while the VM (or standalone VMI) is alive.
+	// - If VMI is owned by a VM: release when VM has DeletionTimestamp
+	// - If VMI is standalone (no VM owner): release when VMI has DeletionTimestamp
 	if vmiInfo != nil {
-		vmDeletionInProgress := vmiInfo.IsVMObjectDeletionInProgress()
-		logger.WithField("vmDeletionInProgress", vmDeletionInProgress).Info("Processing VMI pod deletion")
+		shouldRelease := false
+		if vmiInfo.VMIResource.VMOwner != nil {
+			// VMI is owned by a VM - check VM deletion status
+			shouldRelease = vmiInfo.VMIResource.IsVMObjectDeletionInProgress()
+		} else {
+			// Standalone VMI (no VM owner) - check VMI deletion status
+			shouldRelease = vmiInfo.VMIResource.IsVMIObjectDeletionInProgress()
+		}
+		logger.WithFields(logrus.Fields{
+			"shouldRelease": shouldRelease,
+			"hasVMOwner":    vmiInfo.VMIResource.VMOwner != nil,
+		}).Info("Processing VMI pod deletion")
 
 		// Get IPs allocated to this handle so we can clear their attributes
 		ips, err := calicoClient.IPAM().IPsByHandle(ctx, handleID)
@@ -776,9 +791,9 @@ func cmdDel(args *skel.CmdArgs) error {
 			}
 		}
 
-		// Only release the handle if VM deletion is in progress AND all IPs have empty owner attributes
-		if vmDeletionInProgress && !anyOwnerAttributesRemain {
-			logger.Info("VM deletion in progress and all owner attributes empty - releasing IP by handle")
+		// Only release the handle if the VM/VMI is being deleted AND all IPs have empty owner attributes
+		if shouldRelease && !anyOwnerAttributesRemain {
+			logger.Info("VM/VMI deletion in progress and all owner attributes empty - releasing IP by handle")
 			if err := calicoClient.IPAM().ReleaseByHandle(ctx, handleID); err != nil {
 				if _, ok := err.(errors.ErrorResourceDoesNotExist); !ok {
 					logger.WithError(err).Error("Failed to release address")
@@ -790,7 +805,7 @@ func cmdDel(args *skel.CmdArgs) error {
 			}
 		} else {
 			logger.WithFields(logrus.Fields{
-				"vmDeletionInProgress":     vmDeletionInProgress,
+				"shouldRelease":            shouldRelease,
 				"anyOwnerAttributesRemain": anyOwnerAttributesRemain,
 			}).Info("Completed attribute cleanup - IP remains allocated to VMI")
 		}
