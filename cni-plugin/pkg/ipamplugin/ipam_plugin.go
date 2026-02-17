@@ -202,8 +202,8 @@ func cmdAdd(args *skel.CmdArgs) error {
 			attrs[ipam.AttributeVMUID] = vmUID
 		}
 
-		// Set migration role based on whether this is a migration target
-		if vmiInfo.IsMigrationTarget() {
+		isMigrationTarget := vmiInfo.IsMigrationTarget()
+		if isMigrationTarget {
 			// Check if VM address persistence is disabled
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -220,15 +220,21 @@ func cmdAdd(args *skel.CmdArgs) error {
 				return fmt.Errorf("live migration target pod is not allowed when KubeVirtVMAddressPersistence is disabled")
 			}
 
-			attrs[ipam.AttributeMigrationRole] = "alternate"
 			attrs[ipam.AttributeVMIMUID] = vmiInfo.GetVMIMigrationUID()
-
-			// Handle migration target: retrieve existing IP and set AlternateOwnerAttrs
-			return handleMigrationTarget(calicoClient, handleID, attrs, conf, logger)
-		} else {
-			// For source/active pods, use active role
-			attrs[ipam.AttributeMigrationRole] = "active"
 		}
+
+		// Check if IPs already exist for this VMI handle and reuse them.
+		// - Source pod: reuses IPs from a previous pod with the same VMI (pod recreation).
+		//   If no IPs exist, falls through to normal AutoAssign.
+		// - Migration target: IPs must exist (allocated by the source pod).
+		reuseExistingIPs, err := handleVirtLauncherPod(calicoClient, handleID, attrs, conf, logger, isMigrationTarget)
+		if err != nil {
+			return err
+		}
+		if reuseExistingIPs {
+			return nil
+		}
+		// Source pod with no existing IPs - fall through to normal allocation
 	}
 
 	r := &cniv1.Result{}
@@ -847,66 +853,91 @@ func getNamespace(conf types.NetConf, namespace string, logger *logrus.Entry) (*
 // handleMigrationTarget handles CNI ADD for a migration target pod.
 // For migration targets, the IP(s) must already exist (allocated by source pod to VMI handle).
 // This function retrieves the existing IP(s) and sets AlternateOwnerAttrs with target pod info.
-func handleMigrationTarget(calicoClient client.Interface, handleID string, attrs map[string]string, conf types.NetConf, logger *logrus.Entry) error {
-	logger.Info("Migration target pod detected - retrieving existing IPs from VMI handle")
-
-	// For migration target, the IP(s) must already be allocated to the VMI handle by the source pod
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+// handleVirtLauncherPod handles IP allocation for KubeVirt virt-launcher pods by checking
+// if IPs are already allocated to the VMI handle and reusing them.
+//
+// For source pods (isMigrationTarget=false):
+//   - If existing IPs found: reuses them and sets ActiveOwnerAttrs. Returns (true, nil).
+//   - If no existing IPs: returns (false, nil) so the caller proceeds with normal AutoAssign.
+//
+// For migration target pods (isMigrationTarget=true):
+//   - Existing IPs must already be allocated by the source pod.
+//   - Sets AlternateOwnerAttrs (unconditionally, to handle back-to-back migrations).
+//   - Returns empty routes so CNI skips host-side route programming.
+//   - Returns (true, nil) on success, (false, error) if IPs are missing.
+func handleVirtLauncherPod(calicoClient client.Interface, handleID string, attrs map[string]string, conf types.NetConf, logger *logrus.Entry, isMigrationTarget bool) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	existingIPs, err := calicoClient.IPAM().IPsByHandle(ctx, handleID)
-	if err != nil {
-		logger.WithError(err).Error("Failed to get existing IPs for migration target")
-		return fmt.Errorf("migration target pod but no IP allocated to VMI handle %s: %w", handleID, err)
-	}
-
-	if len(existingIPs) == 0 {
-		logger.Error("Migration target pod but VMI handle has no allocated IPs")
-		return fmt.Errorf("migration target pod but no IP allocated to VMI handle %s", handleID)
-	}
-
-	logger.WithField("ipCount", len(existingIPs)).Info("Found existing IPs for migration target")
-
-	// Update AlternateOwnerAttrs for all IPs (handles dual-stack with both IPv4 and IPv6)
-	// No preconditions are used - we unconditionally overwrite any existing AlternateOwnerAttrs:
-	// - AlternateOwnerAttrs may be empty (no previous migration)
-	// - AlternateOwnerAttrs may contain the previous target pod (back-to-back migrations)
-	for _, existingIP := range existingIPs {
-		logger.WithField("ip", existingIP.IP).Info("Setting AlternateOwnerAttrs for IP")
-
-		// Set AlternateOwnerAttrs only (don't modify ActiveOwnerAttrs)
-		updates := &ipam.OwnerAttributeUpdates{
-			AlternateOwnerAttrs: attrs,
+	if err != nil || len(existingIPs) == 0 {
+		if isMigrationTarget {
+			// Migration target requires existing IPs allocated by the source pod
+			if err != nil {
+				logger.WithError(err).Error("Failed to get existing IPs for migration target")
+				return false, fmt.Errorf("migration target pod but no IP allocated to VMI handle %s: %w", handleID, err)
+			}
+			logger.Error("Migration target pod but VMI handle has no allocated IPs")
+			return false, fmt.Errorf("migration target pod but no IP allocated to VMI handle %s", handleID)
 		}
-		err = calicoClient.IPAM().SetOwnerAttributes(ctx, existingIP, handleID, updates, nil)
+		// Source pod with no existing IPs - fall through to normal AutoAssign
 		if err != nil {
-			logger.WithError(err).WithField("ip", existingIP.IP).Error("Failed to set AlternateOwnerAttrs")
-			return fmt.Errorf("failed to set AlternateOwnerAttrs for IP %s: %w", existingIP.IP, err)
+			logger.WithError(err).Debug("No existing IPs for VMI handle, proceeding with new allocation")
 		}
+		return false, nil
 	}
 
-	logger.Info("Successfully set AlternateOwnerAttrs for all IPs")
+	logger.WithFields(logrus.Fields{
+		"ipCount":           len(existingIPs),
+		"isMigrationTarget": isMigrationTarget,
+	}).Info("Found existing IPs for VMI handle, reusing them")
 
-	// Build and return the result with all existing IPs
+	// Build result IPs and update owner attributes for each IP
 	r := &cniv1.Result{}
-	for _, existingIP := range existingIPs {
-		if existingIP.IP.To4() == nil {
-			// IPv6
-			ipNetwork := net.IPNet{IP: existingIP.IP, Mask: net.CIDRMask(128, 128)}
-			r.IPs = append(r.IPs, &cniv1.IPConfig{Address: ipNetwork})
-			logger.WithField("ipv6", existingIP.IP).Info("Added IPv6 to result")
+	for _, ip := range existingIPs {
+		var mask net.IPMask
+		if ip.IP.To4() != nil {
+			mask = net.CIDRMask(32, 32)
 		} else {
-			// IPv4
-			ipNetwork := net.IPNet{IP: existingIP.IP, Mask: net.CIDRMask(32, 32)}
-			r.IPs = append(r.IPs, &cniv1.IPConfig{Address: ipNetwork})
-			logger.WithField("ipv4", existingIP.IP).Info("Added IPv4 to result")
+			mask = net.CIDRMask(128, 128)
+		}
+		r.IPs = append(r.IPs, &cniv1.IPConfig{
+			Address: net.IPNet{IP: ip.IP, Mask: mask},
+		})
+
+		// Source pod: set ActiveOwnerAttrs; Migration target: set AlternateOwnerAttrs
+		var updates *ipam.OwnerAttributeUpdates
+		if isMigrationTarget {
+			updates = &ipam.OwnerAttributeUpdates{
+				AlternateOwnerAttrs: attrs,
+			}
+		} else {
+			updates = &ipam.OwnerAttributeUpdates{
+				ActiveOwnerAttrs: attrs,
+			}
+		}
+		err = calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, updates, nil)
+		if err != nil {
+			logger.WithError(err).Errorf("Failed to set owner attributes for IP %s", ip)
+			return false, fmt.Errorf("failed to set owner attributes for IP %s: %w", ip, err)
 		}
 	}
 
-	// Migration target: return empty routes to skip route programming
-	// The source pod keeps the route until migration completes, then Felix updates it
-	r.Routes = []*cnitypes.Route{}
-	logger.Info("Migration target pod: returning empty routes to skip route programming")
+	// Set routes based on pod role:
+	// - Source pod: one route per IP so CNI programs host-side routes
+	// - Migration target: empty routes to skip route programming (source pod keeps the route
+	//   until migration completes, then Felix updates it)
+	if isMigrationTarget {
+		r.Routes = []*cnitypes.Route{}
+		logger.Info("Migration target pod: returning existing IPs with empty routes")
+	} else {
+		for _, ipConfig := range r.IPs {
+			r.Routes = append(r.Routes, &cnitypes.Route{
+				Dst: ipConfig.Address,
+			})
+		}
+		logger.Info("Source pod: returning existing IPs with routes")
+	}
 
-	return cnitypes.PrintResult(r, conf.CNIVersion)
+	return true, cnitypes.PrintResult(r, conf.CNIVersion)
 }

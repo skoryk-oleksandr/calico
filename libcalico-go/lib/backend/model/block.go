@@ -56,8 +56,7 @@ const (
 	// UID of the VirtualMachineInstanceMigration object (only present on migration target pods)
 	IPAMBlockAttributeVMIMUID = "vmim-uid"
 
-	// Migration role: "active" or "alternate"
-	IPAMBlockAttributeMigrationRole = "migration-role"
+
 
 	IPAMAffinityTypeHost    = "host"
 	IPAMAffinityTypeVirtual = "virtual"
