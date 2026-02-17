@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run make generate
-        run: make generate
+        run: make gen-deps-files
 
       - name: Check for changes
         id: changes
