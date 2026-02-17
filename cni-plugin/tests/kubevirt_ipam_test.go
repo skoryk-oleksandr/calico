@@ -5,6 +5,7 @@ package main_test
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"sort"
 
@@ -163,6 +164,27 @@ func verifyOwnerAttributesCleared(calicoClient client.Interface, networkName, na
 	fmt.Printf("[TEST] Verified owner attributes cleared for handle %s (%d IPs)\n", handleID, len(ips))
 }
 
+// verifyHandleReleased verifies that the VMI handle has been released (no IPs allocated).
+func verifyHandleReleased(calicoClient client.Interface, networkName, namespace, vmName string) {
+	ctx := context.Background()
+	handleID := ipam.CreateVMIHandleID(networkName, namespace, vmName)
+
+	ips, err := calicoClient.IPAM().IPsByHandle(ctx, handleID)
+	// After ReleaseByHandle, either IPsByHandle returns an error (handle not found)
+	// or returns an empty list. Both indicate the handle has been released.
+	if err == nil {
+		Expect(ips).To(BeEmpty(), "Handle %s should have no IPs after release", handleID)
+	}
+	fmt.Printf("[TEST] Verified handle %s is released (err=%v, ipCount=%d)\n", handleID, err, len(ips))
+}
+
+// verifyHandleNotReleased verifies that the VMI handle still has IPs allocated matching expectedIPs.
+func verifyHandleNotReleased(calicoClient client.Interface, networkName, namespace, vmName string, expectedIPs []string) {
+	currentIPs := getIPsForVMIHandle(calicoClient, networkName, namespace, vmName)
+	Expect(currentIPs).To(Equal(expectedIPs), "IPs should still be allocated to handle")
+	fmt.Printf("[TEST] Verified handle still has IPs: %v\n", currentIPs)
+}
+
 // getDualStackNetconf returns a netconf JSON string that requests both IPv4 and IPv6 addresses.
 func getDualStackNetconf(cniVersion string) string {
 	return fmt.Sprintf(`{
@@ -243,6 +265,11 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 	var podName string
 	var cid string
 	var virtResourceManager *KubeVirtResourceManager
+	var sourcePodName string
+	var sourceCID string
+	var sourceCNIArgs string
+	var netconf string
+	var originalIPs []string
 
 	// initialiseTestInfra sets up the test infrastructure including datastore, IP pools, k8s client, node, and namespace
 	initialiseTestInfra := func() {
@@ -284,42 +311,55 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
-	// setupMigrationTarget creates VM, VMI, source pod with IP, VMIM, and target pod for migration testing
-	setupMigrationTarget := func() (migrationUID, sourcePodName, sourceCID string) {
-		fmt.Printf("\n[TEST] ===== Setting up migration target scenario =====\n")
+	// setupMigrationTarget creates VMIM and target pod for migration testing.
+	// Assumes VM, VMI, and source pod with IPs are already created by the outer BeforeEach.
+	setupMigrationTarget := func() string {
+		fmt.Printf("\n[TEST] ===== Setting up migration target =====\n")
 
-		// Step 1: Create VM and VMI (initially without migration)
-		virtResourceManager.CreateVM()
-		virtResourceManager.CreateVMI(false, "")
+		// Create VMIM
+		migrationUID := virtResourceManager.CreateVMIM("test-migration")
 
-		// Step 2: Create source pod and allocate IP to it
-		sourcePodName = "virt-launcher-" + vmName + "-source"
-		sourceCID = uuid.NewString()
-		virtResourceManager.CreateVirtLauncherPod(sourcePodName, "")
-
-		// Step 3: Allocate dual-stack IPs to source pod
-		fmt.Printf("[TEST] Allocating dual-stack IPs to source pod %s\n", sourcePodName)
-		netconf := getDualStackNetconf(cniVersion)
-
-		sourceCNIArgs := GetCNIArgsForPod(sourcePodName, testNs, sourceCID)
-		result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", sourceCNIArgs, sourceCID, cniVersion)
-		Expect(exitCode).To(Equal(0), fmt.Sprintf("Source pod IPAM ADD failed: %v", errOut))
-		Expect(result.IPs).To(HaveLen(2), "Expected dual-stack: one IPv4 and one IPv6")
-		fmt.Printf("[TEST] Source pod allocated IPs: %s, %s\n", result.IPs[0].Address.IP.String(), result.IPs[1].Address.IP.String())
-
-		// Step 4: Now simulate migration - create VMIM
-		migrationUID = virtResourceManager.CreateVMIM("test-migration")
-
-		// Step 5: Create target pod with migration label
-		podName = "virt-launcher-" + vmName + "-target" // Different pod name for target
+		// Create target pod with migration label
+		podName = "virt-launcher-" + vmName + "-target"
 		virtResourceManager.CreateVirtLauncherPod(podName, migrationUID)
 
-		fmt.Println("[TEST] Migration target setup completed - source pod has IP, target pod created")
-		return migrationUID, sourcePodName, sourceCID
+		fmt.Println("[TEST] Migration target setup completed - target pod created")
+		return migrationUID
 	}
 
 	BeforeEach(func() {
 		initialiseTestInfra()
+
+		// Common setup: Create VM, VMI, first virt-launcher pod and allocate dual-stack IPs.
+		// All test contexts share this base state.
+		virtResourceManager.CreateVM()
+		virtResourceManager.CreateVMI(false, "")
+
+		sourcePodName = "virt-launcher-" + vmName + "-source"
+		sourceCID = uuid.NewString()
+		virtResourceManager.CreateVirtLauncherPod(sourcePodName, "")
+
+		netconf = getDualStackNetconf(cniVersion)
+		sourceCNIArgs = GetCNIArgsForPod(sourcePodName, testNs, sourceCID)
+
+		result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", sourceCNIArgs, sourceCID, cniVersion)
+		Expect(exitCode).To(Equal(0), fmt.Sprintf("Source IPAM ADD failed: %v", errOut))
+		Expect(result.IPs).To(HaveLen(2), "Expected dual-stack: one IPv4 and one IPv6")
+		verifyRoutesPopulatedInResult(result, true)
+
+		originalIPs = getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
+		Expect(originalIPs).To(HaveLen(2))
+		// Verify one IPv4 and one IPv6
+		hasIPv4 := net.ParseIP(originalIPs[0]).To4() != nil || net.ParseIP(originalIPs[1]).To4() != nil
+		hasIPv6 := net.ParseIP(originalIPs[0]).To4() == nil || net.ParseIP(originalIPs[1]).To4() == nil
+		Expect(hasIPv4).To(BeTrue(), "Expected one IPv4 address in original IPs")
+		Expect(hasIPv6).To(BeTrue(), "Expected one IPv6 address in original IPs")
+		fmt.Printf("[TEST] Original IPs: %v\n", originalIPs)
+
+		// Verify source pod is active owner, no alternate
+		verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
+			sourcePodName, virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
+			"", "")
 	})
 
 	AfterEach(func() {
@@ -338,345 +378,260 @@ var _ = Describe("KubeVirt VM-based handle ID", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should use VM-based handle ID for virt-launcher pod", func() {
-		fmt.Println("\n[TEST] ===== Running test: should use VM-based handle ID for virt-launcher pod =====")
-		// Create VM, VMI, and virt-launcher pod
-		virtResourceManager.CreateVM()
-		virtResourceManager.CreateVMI(false, "")
-		virtResourceManager.CreateVirtLauncherPod(podName, "")
+	Context("IP Persistence and Release", func() {
+		Context("on pod recreation", func() {
+			It("should retain IPs when virt-launcher pod is deleted and recreated with same VMI", func() {
+				fmt.Println("\n[TEST] ===== Running test: IP persistence on pod recreation =====")
 
-		netconf := getDualStackNetconf(cniVersion)
-		cniArgs := GetCNIArgsForPod(podName, testNs, cid)
+				// Step 1: IPAM DEL for source pod - clears owner attrs but IPs stay allocated
+				_, _, exitCode := testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
+				Expect(exitCode).To(Equal(0))
 
-		// Run IPAM ADD - should get one IPv4 and one IPv6
-		result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs, cid, cniVersion)
-		Expect(exitCode).To(Equal(0), fmt.Sprintf("IPAM ADD failed: %v", errOut))
-		Expect(result.IPs).To(HaveLen(2), "Expected dual-stack: one IPv4 and one IPv6")
+				// Verify IPs still allocated but owner attributes cleared
+				currentIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
+				Expect(currentIPs).To(Equal(originalIPs), "IPs should persist after pod deletion")
+				verifyOwnerAttributesCleared(calicoClient, "net1", testNs, vmName)
 
-		// Verify one IPv4 and one IPv6 address
-		var hasIPv4, hasIPv6 bool
-		for _, ipConfig := range result.IPs {
-			if ipConfig.Address.IP.To4() != nil {
-				hasIPv4 = true
-			} else {
-				hasIPv6 = true
-			}
-		}
-		Expect(hasIPv4).To(BeTrue(), "Expected an IPv4 address in result")
-		Expect(hasIPv6).To(BeTrue(), "Expected an IPv6 address in result")
+				// Step 2: Delete source pod from k8s, create pod2 with same VMI
+				err := k8sClient.CoreV1().Pods(testNs).Delete(context.Background(), sourcePodName, metav1.DeleteOptions{})
+				Expect(err).NotTo(HaveOccurred())
 
-		// Verify routes are populated for normal pod
-		verifyRoutesPopulatedInResult(result, true)
+				pod2Name := "virt-launcher-" + vmName + "-pod2"
+				cid2 := uuid.NewString()
+				virtResourceManager.CreateVirtLauncherPod(pod2Name, "")
 
-		// Verify owner attributes: source pod should be ActiveOwner, no AlternateOwner
-		verifyOwnerAttributes(
-			calicoClient,
-			"net1",  // network name from netconf
-			testNs,  // namespace
-			vmName,  // VMI name (same as VM name)
-			podName, // expected active pod name
-			virtResourceManager.Resources.VMIUID,
-			virtResourceManager.Resources.VMUID,
-			"", // no alternate pod (not a migration)
-			"", // no VMIM UID
-		)
+				// Step 3: IPAM ADD for pod2 - should get same IPs
+				cniArgs2 := GetCNIArgsForPod(pod2Name, testNs, cid2)
+				result2, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs2, cid2, cniVersion)
+				Expect(exitCode).To(Equal(0), fmt.Sprintf("IPAM ADD for pod2 failed: %v", errOut))
+				Expect(result2.IPs).To(HaveLen(2), "Expected dual-stack: one IPv4 and one IPv6")
+				verifyRoutesPopulatedInResult(result2, true)
 
-		// Clean up
-		_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", cniArgs, cid, cniVersion)
-		Expect(exitCode).To(Equal(0))
-	})
+				// Verify same IPs were reused
+				newIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
+				Expect(newIPs).To(Equal(originalIPs), "IPs should be the same after pod recreation")
+				fmt.Printf("[TEST] Recreated pod IPs: %v (same as original)\n", newIPs)
 
-	Context("IP persistence on pod recreation", func() {
-		It("should retain IPs when virt-launcher pod is deleted and recreated with same VMI", func() {
-			fmt.Println("\n[TEST] ===== Running test: IP persistence on pod recreation =====")
+				// Verify pod2 is now active owner
+				verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
+					pod2Name, virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
+					"", "")
 
-			// Step 1: Create VM, VMI, and first virt-launcher pod
-			virtResourceManager.CreateVM()
-			virtResourceManager.CreateVMI(false, "")
-
-			pod1Name := "virt-launcher-" + vmName + "-pod1"
-			cid1 := uuid.NewString()
-			virtResourceManager.CreateVirtLauncherPod(pod1Name, "")
-
-			netconf := getDualStackNetconf(cniVersion)
-			cniArgs1 := GetCNIArgsForPod(pod1Name, testNs, cid1)
-
-			// IPAM ADD for pod1
-			result1, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs1, cid1, cniVersion)
-			Expect(exitCode).To(Equal(0), fmt.Sprintf("IPAM ADD for pod1 failed: %v", errOut))
-			Expect(result1.IPs).To(HaveLen(2), "Expected dual-stack: one IPv4 and one IPv6")
-			verifyRoutesPopulatedInResult(result1, true)
-
-			// Record allocated IPs for later comparison
-			originalIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
-			Expect(originalIPs).To(HaveLen(2))
-			fmt.Printf("[TEST] Original IPs: %v\n", originalIPs)
-
-			// Verify pod1 is active owner, no alternate
-			verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
-				pod1Name, virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
-				"", "")
-
-			// Step 2: IPAM DEL for pod1 - clears owner attrs but IPs stay allocated
-			_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", cniArgs1, cid1, cniVersion)
-			Expect(exitCode).To(Equal(0))
-
-			// Verify IPs still allocated but owner attributes cleared
-			currentIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
-			Expect(currentIPs).To(Equal(originalIPs), "IPs should persist after pod deletion")
-			verifyOwnerAttributesCleared(calicoClient, "net1", testNs, vmName)
-
-			// Step 3: Delete pod1 from k8s, create pod2 with same VMI
-			err := k8sClient.CoreV1().Pods(testNs).Delete(context.Background(), pod1Name, metav1.DeleteOptions{})
-			Expect(err).NotTo(HaveOccurred())
-
-			pod2Name := "virt-launcher-" + vmName + "-pod2"
-			cid2 := uuid.NewString()
-			virtResourceManager.CreateVirtLauncherPod(pod2Name, "")
-
-			// Step 4: IPAM ADD for pod2 - should get same IPs
-			cniArgs2 := GetCNIArgsForPod(pod2Name, testNs, cid2)
-			result2, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs2, cid2, cniVersion)
-			Expect(exitCode).To(Equal(0), fmt.Sprintf("IPAM ADD for pod2 failed: %v", errOut))
-			Expect(result2.IPs).To(HaveLen(2), "Expected dual-stack: one IPv4 and one IPv6")
-			verifyRoutesPopulatedInResult(result2, true)
-
-			// Verify same IPs were reused
-			newIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
-			Expect(newIPs).To(Equal(originalIPs), "IPs should be the same after pod recreation")
-			fmt.Printf("[TEST] Recreated pod IPs: %v (same as original)\n", newIPs)
-
-			// Verify pod2 is now active owner
-			verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
-				pod2Name, virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
-				"", "")
-
-			// Clean up
-			_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", cniArgs2, cid2, cniVersion)
-			Expect(exitCode).To(Equal(0))
-		})
-	})
-
-	Context("IP persistence on live migration", func() {
-		It("should retain IPs during live migration and clean up owners on pod deletion", func() {
-			fmt.Println("\n[TEST] ===== Running test: IP persistence on live migration =====")
-
-			// Step 1: Create VM, VMI, and source pod with IPs
-			virtResourceManager.CreateVM()
-			virtResourceManager.CreateVMI(false, "")
-
-			sourcePodName := "virt-launcher-" + vmName + "-source"
-			sourceCID := uuid.NewString()
-			virtResourceManager.CreateVirtLauncherPod(sourcePodName, "")
-
-			netconf := getDualStackNetconf(cniVersion)
-			sourceCNIArgs := GetCNIArgsForPod(sourcePodName, testNs, sourceCID)
-
-			result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", sourceCNIArgs, sourceCID, cniVersion)
-			Expect(exitCode).To(Equal(0), fmt.Sprintf("Source IPAM ADD failed: %v", errOut))
-			Expect(result.IPs).To(HaveLen(2))
-
-			// Record original IPs
-			originalIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
-			fmt.Printf("[TEST] Source pod IPs: %v\n", originalIPs)
-
-			// Verify source is active owner
-			verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
-				sourcePodName, virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
-				"", "")
-
-			// Step 2: Create VMIM and migration target pod
-			migrationUID := virtResourceManager.CreateVMIM("test-migration")
-			targetPodName := "virt-launcher-" + vmName + "-target"
-			targetCID := uuid.NewString()
-			virtResourceManager.CreateVirtLauncherPod(targetPodName, migrationUID)
-
-			// IPAM ADD for target pod
-			targetCNIArgs := GetCNIArgsForPod(targetPodName, testNs, targetCID)
-			result, errOut, exitCode = testutils.RunIPAMPlugin(netconf, "ADD", targetCNIArgs, targetCID, cniVersion)
-			Expect(exitCode).To(Equal(0), fmt.Sprintf("Target IPAM ADD failed: %v", errOut))
-			Expect(result.IPs).To(HaveLen(2), "Migration target should receive both existing IPs")
-			verifyRoutesPopulatedInResult(result, false)
-
-			// Verify IPs are persistent
-			currentIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
-			Expect(currentIPs).To(Equal(originalIPs), "IPs should persist during migration")
-
-			// Verify source=active, target=alternate
-			verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
-				sourcePodName, virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
-				targetPodName, virtResourceManager.Resources.VMIMUID)
-
-			// Step 3: Delete source pod - clears active owner
-			_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
-			Expect(exitCode).To(Equal(0))
-
-			// IPs should persist, active cleared, alternate remains
-			currentIPs = getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
-			Expect(currentIPs).To(Equal(originalIPs), "IPs should persist after source pod deletion")
-
-			// Active owner cleared, alternate (target) remains
-			verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
-				"", // active owner cleared
-				virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
-				targetPodName, virtResourceManager.Resources.VMIMUID)
-
-			// Step 4: Delete target pod - clears alternate owner
-			_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", targetCNIArgs, targetCID, cniVersion)
-			Expect(exitCode).To(Equal(0))
-
-			// IPs should persist (VM deletion not in progress), both owners cleared
-			currentIPs = getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
-			Expect(currentIPs).To(Equal(originalIPs), "IPs should persist after both pod deletions")
-			verifyOwnerAttributesCleared(calicoClient, "net1", testNs, vmName)
-		})
-	})
-
-	Context("IP persistence on VMI recreation", func() {
-		It("should retain IPs when VMI is deleted and recreated", func() {
-			fmt.Println("\n[TEST] ===== Running test: IP persistence on VMI recreation =====")
-
-			// Step 1: Create VM, VMI, and source pod with IPs
-			virtResourceManager.CreateVM()
-			virtResourceManager.CreateVMI(false, "")
-			oldVMIUID := virtResourceManager.Resources.VMIUID
-
-			sourcePod1Name := "virt-launcher-" + vmName + "-src1"
-			sourceCID1 := uuid.NewString()
-			virtResourceManager.CreateVirtLauncherPod(sourcePod1Name, "")
-
-			netconf := getDualStackNetconf(cniVersion)
-			cniArgs1 := GetCNIArgsForPod(sourcePod1Name, testNs, sourceCID1)
-
-			result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs1, sourceCID1, cniVersion)
-			Expect(exitCode).To(Equal(0), fmt.Sprintf("Source pod1 IPAM ADD failed: %v", errOut))
-			Expect(result.IPs).To(HaveLen(2))
-
-			// Record original IPs
-			originalIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
-			fmt.Printf("[TEST] Original IPs (VMI UID: %s): %v\n", oldVMIUID, originalIPs)
-
-			// Verify source pod1 is active owner
-			verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
-				sourcePod1Name, oldVMIUID, virtResourceManager.Resources.VMUID,
-				"", "")
-
-			// Step 2: Delete VMI (simulating VMI recycling by VM controller)
-			// Note: source pod1 is NOT deleted - it becomes orphaned
-			fmt.Println("[TEST] Deleting VMI to simulate VMI recreation...")
-			virtResourceManager.DeleteVMI()
-
-			// Step 3: Create new VMI (same name, new UID - as VM controller would do)
-			virtResourceManager.CreateVMI(false, "")
-			newVMIUID := virtResourceManager.Resources.VMIUID
-			Expect(newVMIUID).NotTo(Equal(oldVMIUID), "New VMI should have a different UID")
-			fmt.Printf("[TEST] New VMI created with UID: %s (old: %s)\n", newVMIUID, oldVMIUID)
-
-			// IPs should still be allocated to the handle (handle is based on namespace+name, not UID)
-			currentIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
-			Expect(currentIPs).To(Equal(originalIPs), "IPs should persist across VMI recreation")
-
-			// Step 4: Create new source pod for the new VMI
-			sourcePod2Name := "virt-launcher-" + vmName + "-src2"
-			sourceCID2 := uuid.NewString()
-			virtResourceManager.CreateVirtLauncherPod(sourcePod2Name, "")
-
-			// Step 5: IPAM ADD for new source pod - should get same IPs
-			cniArgs2 := GetCNIArgsForPod(sourcePod2Name, testNs, sourceCID2)
-			result, errOut, exitCode = testutils.RunIPAMPlugin(netconf, "ADD", cniArgs2, sourceCID2, cniVersion)
-			Expect(exitCode).To(Equal(0), fmt.Sprintf("Source pod2 IPAM ADD failed: %v", errOut))
-			Expect(result.IPs).To(HaveLen(2))
-			verifyRoutesPopulatedInResult(result, true)
-
-			// Verify same IPs
-			newIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
-			Expect(newIPs).To(Equal(originalIPs), "IPs should be the same after VMI recreation")
-			fmt.Printf("[TEST] New source pod IPs: %v (same as original)\n", newIPs)
-
-			// Verify new source pod is active owner with new VMI UID
-			verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
-				sourcePod2Name, newVMIUID, virtResourceManager.Resources.VMUID,
-				"", "")
-
-			// Clean up
-			_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", cniArgs2, sourceCID2, cniVersion)
-			Expect(exitCode).To(Equal(0))
-		})
-	})
-
-	Context("Migration target pod", func() {
-		var sourcePodName string
-		var sourceCID string
-
-		BeforeEach(func() {
-			_, sourcePodName, sourceCID = setupMigrationTarget()
+				// Clean up
+				_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", cniArgs2, cid2, cniVersion)
+				Expect(exitCode).To(Equal(0))
+			})
 		})
 
-		AfterEach(func() {
-			// Clean up source pod IP allocation
-			if sourcePodName != "" && sourceCID != "" {
-				netconf := getDualStackNetconf(cniVersion)
-				sourceCNIArgs := GetCNIArgsForPod(sourcePodName, testNs, sourceCID)
-				testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
-			}
+		Context("on live migration", func() {
+			It("should retain IPs during live migration and clean up owners on pod deletion", func() {
+				fmt.Println("\n[TEST] ===== Running test: IP persistence on live migration =====")
+
+				// Step 1: Add migration target pod, verify IPs are persistent,
+				// verify owner attributes (source=active, target=alternate), and verify empty routes
+				setupMigrationTarget()
+				targetPodName := podName
+				targetCID := uuid.NewString()
+				targetCNIArgs := GetCNIArgsForPod(targetPodName, testNs, targetCID)
+				result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", targetCNIArgs, targetCID, cniVersion)
+				Expect(exitCode).To(Equal(0), fmt.Sprintf("Target IPAM ADD failed: %v", errOut))
+				Expect(result.IPs).To(HaveLen(2), "Migration target should receive both existing IPs")
+
+				currentIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
+				Expect(currentIPs).To(Equal(originalIPs), "IPs should persist during migration")
+
+				verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
+					sourcePodName, virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
+					targetPodName, virtResourceManager.Resources.VMIMUID)
+
+				verifyRoutesPopulatedInResult(result, false)
+
+				// Step 2: Delete source pod, verify IPs persist,
+				// verify active owner cleared and alternate (target) remains
+				_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
+				Expect(exitCode).To(Equal(0))
+
+				currentIPs = getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
+				Expect(currentIPs).To(Equal(originalIPs), "IPs should persist after source pod deletion")
+
+				verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
+					"", // active owner cleared
+					virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
+					targetPodName, virtResourceManager.Resources.VMIMUID)
+
+				// Step 3: Delete target pod, verify IPs persist,
+				// verify both owners cleared
+				_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", targetCNIArgs, targetCID, cniVersion)
+				Expect(exitCode).To(Equal(0))
+
+				currentIPs = getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
+				Expect(currentIPs).To(Equal(originalIPs), "IPs should persist after both pod deletions")
+				verifyOwnerAttributesCleared(calicoClient, "net1", testNs, vmName)
+			})
 		})
 
-		It("should return empty routes for migration target pod", func() {
-			fmt.Println("\n[TEST] ===== Running test: should return empty routes for migration target pod =====")
-			netconf := getDualStackNetconf(cniVersion)
+		Context("on VMI recreation", func() {
+			It("should retain IPs when VMI is deleted and recreated", func() {
+				fmt.Println("\n[TEST] ===== Running test: IP persistence on VMI recreation =====")
+				oldVMIUID := virtResourceManager.Resources.VMIUID
 
-			// Verify source pod is ActiveOwner before migration target ADD
-			verifyOwnerAttributes(
-				calicoClient,
-				"net1",
-				testNs,
-				vmName,
-				sourcePodName, // source pod is active owner
-				virtResourceManager.Resources.VMIUID,
-				virtResourceManager.Resources.VMUID,
-				"", // no alternate yet
-				"",
-			)
+				// Step 1: Delete VMI (simulating VMI recycling by VM controller)
+				// Note: source pod is NOT deleted - it becomes orphaned
+				fmt.Println("[TEST] Deleting VMI to simulate VMI recreation...")
+				virtResourceManager.DeleteVMI()
 
-			cniArgs := GetCNIArgsForPod(podName, testNs, cid)
+				// Step 2: Create new VMI (same name, new UID - as VM controller would do)
+				virtResourceManager.CreateVMI(false, "")
+				newVMIUID := virtResourceManager.Resources.VMIUID
+				Expect(newVMIUID).NotTo(Equal(oldVMIUID), "New VMI should have a different UID")
+				fmt.Printf("[TEST] New VMI created with UID: %s (old: %s)\n", newVMIUID, oldVMIUID)
 
-			// Run IPAM ADD for migration target - should get both existing IPs (IPv4 + IPv6)
-			result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs, cid, cniVersion)
-			Expect(exitCode).To(Equal(0), fmt.Sprintf("IPAM ADD failed: %v", errOut))
-			Expect(result.IPs).To(HaveLen(2), "Expected dual-stack: migration target should receive both existing IPs")
+				// IPs should still be allocated to the handle (handle is based on namespace+name, not UID)
+				currentIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
+				Expect(currentIPs).To(Equal(originalIPs), "IPs should persist across VMI recreation")
 
-			// Verify empty routes for migration target
-			verifyRoutesPopulatedInResult(result, false)
+				// Step 3: Create new source pod for the new VMI
+				sourcePod2Name := "virt-launcher-" + vmName + "-src2"
+				sourceCID2 := uuid.NewString()
+				virtResourceManager.CreateVirtLauncherPod(sourcePod2Name, "")
 
-			// Verify owner attributes after migration target ADD:
-			// - ActiveOwnerAttrs should still be the source pod
-			// - AlternateOwnerAttrs should now be the target pod
-			verifyOwnerAttributes(
-				calicoClient,
-				"net1",
-				testNs,
-				vmName,
-				sourcePodName, // source pod remains active owner
-				virtResourceManager.Resources.VMIUID,
-				virtResourceManager.Resources.VMUID,
-				podName, // target pod is now alternate owner
-				virtResourceManager.Resources.VMIMUID,
-			)
+				// Step 4: IPAM ADD for new source pod - should get same IPs
+				cniArgs2 := GetCNIArgsForPod(sourcePod2Name, testNs, sourceCID2)
+				result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", cniArgs2, sourceCID2, cniVersion)
+				Expect(exitCode).To(Equal(0), fmt.Sprintf("Source pod2 IPAM ADD failed: %v", errOut))
+				Expect(result.IPs).To(HaveLen(2))
+				verifyRoutesPopulatedInResult(result, true)
 
-			// Clean up
-			_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", cniArgs, cid, cniVersion)
-			Expect(exitCode).To(Equal(0))
+				// Verify same IPs
+				newIPs := getIPsForVMIHandle(calicoClient, "net1", testNs, vmName)
+				Expect(newIPs).To(Equal(originalIPs), "IPs should be the same after VMI recreation")
+				fmt.Printf("[TEST] New source pod IPs: %v (same as original)\n", newIPs)
+
+				// Verify new source pod is active owner with new VMI UID
+				verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
+					sourcePod2Name, newVMIUID, virtResourceManager.Resources.VMUID,
+					"", "")
+
+				// Clean up
+				_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", cniArgs2, sourceCID2, cniVersion)
+				Expect(exitCode).To(Equal(0))
+			})
+		})
+
+		Context("IP release", func() {
+			It("should not release handle when source pod is deleted without VM deletion", func() {
+				fmt.Println("\n[TEST] ===== Running test: IP release - no release on pod deletion without VM deletion =====")
+
+				// IPAM DEL for source pod - clears owner attrs but VM is not being deleted
+				_, _, exitCode := testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
+				Expect(exitCode).To(Equal(0))
+
+				// Handle and IPs should still exist (VM not deleting → no release)
+				verifyHandleNotReleased(calicoClient, "net1", testNs, vmName, originalIPs)
+				verifyOwnerAttributesCleared(calicoClient, "net1", testNs, vmName)
+			})
+
+			It("should not release handle when VMI has deletion timestamp", func() {
+				fmt.Println("\n[TEST] ===== Running test: IP release - no release on VMI deletion =====")
+
+				// Set deletion timestamp on VMI (not VM)
+				virtResourceManager.SetVMIDeletionTimestamp()
+
+				// IPAM DEL for source pod
+				_, _, exitCode := testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
+				Expect(exitCode).To(Equal(0))
+
+				// Handle and IPs should still exist (only VM deletion triggers release, not VMI)
+				verifyHandleNotReleased(calicoClient, "net1", testNs, vmName, originalIPs)
+				verifyOwnerAttributesCleared(calicoClient, "net1", testNs, vmName)
+			})
+
+			It("should release handle when VM has deletion timestamp and pod is deleted", func() {
+				fmt.Println("\n[TEST] ===== Running test: IP release - release on VM deletion =====")
+
+				// Set deletion timestamp on VM
+				virtResourceManager.SetVMDeletionTimestamp()
+
+				// IPAM DEL for source pod - VM is deleting and all owners cleared → release
+				_, _, exitCode := testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
+				Expect(exitCode).To(Equal(0))
+
+				// Handle and IPs should be released
+				verifyHandleReleased(calicoClient, "net1", testNs, vmName)
+			})
+
+			It("should release handle when both owners are deleted with VM deleting (source first)", func() {
+				fmt.Println("\n[TEST] ===== Running test: IP release - both owners deleted, source first =====")
+
+				// Step 1: Add migration target pod
+				setupMigrationTarget()
+				targetPodName := podName
+				targetCID := uuid.NewString()
+				targetCNIArgs := GetCNIArgsForPod(targetPodName, testNs, targetCID)
+				result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", targetCNIArgs, targetCID, cniVersion)
+				Expect(exitCode).To(Equal(0), fmt.Sprintf("Target IPAM ADD failed: %v", errOut))
+				Expect(result.IPs).To(HaveLen(2))
+
+				// Step 2: Verify two owners (source=active, target=alternate)
+				verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
+					sourcePodName, virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
+					targetPodName, virtResourceManager.Resources.VMIMUID)
+
+				// Step 3: Set VM deletion timestamp
+				virtResourceManager.SetVMDeletionTimestamp()
+
+				// Step 4: Delete source pod - clears active owner, but alternate (target) remains → not released
+				_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
+				Expect(exitCode).To(Equal(0))
+				verifyHandleNotReleased(calicoClient, "net1", testNs, vmName, originalIPs)
+
+				// Step 5: Delete target pod - clears alternate owner, all owners empty, VM deleting → released
+				_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", targetCNIArgs, targetCID, cniVersion)
+				Expect(exitCode).To(Equal(0))
+				verifyHandleReleased(calicoClient, "net1", testNs, vmName)
+			})
+
+			It("should release handle when both owners are deleted with VM deleting (target first)", func() {
+				fmt.Println("\n[TEST] ===== Running test: IP release - both owners deleted, target first =====")
+
+				// Step 1: Add migration target pod
+				setupMigrationTarget()
+				targetPodName := podName
+				targetCID := uuid.NewString()
+				targetCNIArgs := GetCNIArgsForPod(targetPodName, testNs, targetCID)
+				result, errOut, exitCode := testutils.RunIPAMPlugin(netconf, "ADD", targetCNIArgs, targetCID, cniVersion)
+				Expect(exitCode).To(Equal(0), fmt.Sprintf("Target IPAM ADD failed: %v", errOut))
+				Expect(result.IPs).To(HaveLen(2))
+
+				// Step 2: Verify two owners (source=active, target=alternate)
+				verifyOwnerAttributes(calicoClient, "net1", testNs, vmName,
+					sourcePodName, virtResourceManager.Resources.VMIUID, virtResourceManager.Resources.VMUID,
+					targetPodName, virtResourceManager.Resources.VMIMUID)
+
+				// Step 3: Set VM deletion timestamp
+				virtResourceManager.SetVMDeletionTimestamp()
+
+				// Step 4: Delete target pod - clears alternate owner, but active (source) remains → not released
+				_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", targetCNIArgs, targetCID, cniVersion)
+				Expect(exitCode).To(Equal(0))
+				verifyHandleNotReleased(calicoClient, "net1", testNs, vmName, originalIPs)
+
+				// Step 5: Delete source pod - clears active owner, all owners empty, VM deleting → released
+				_, _, exitCode = testutils.RunIPAMPlugin(netconf, "DEL", sourceCNIArgs, sourceCID, cniVersion)
+				Expect(exitCode).To(Equal(0))
+				verifyHandleReleased(calicoClient, "net1", testNs, vmName)
+			})
 		})
 	})
 
 	Context("KubeVirt VM persistence disabled", func() {
 		BeforeEach(func() {
-			// Set IPAMConfig to disable VM address persistence before setting up resources
-			// (Parent BeforeEach already called initialiseTestInfra which wiped datastore)
+			// Set IPAMConfig to disable VM address persistence.
+			// Parent BeforeEach already created VM, VMI, and source pod with IPs.
 			updateIPAMKubeVirtIPPersistence(calicoClient, vmAddressPersistencePtr(libapiv3.VMAddressPersistenceDisabled))
 
-			// Set up migration target scenario
-			_, _, _ = setupMigrationTarget()
+			// Set up migration target (VMIM + target pod)
+			setupMigrationTarget()
 		})
 
 		AfterEach(func() {
@@ -952,4 +907,62 @@ func (h *KubeVirtResourceManager) CreateVMIM(name string) string {
 	fmt.Printf("[TEST] VMIM is now retrievable: %s/%s with UID: %s\n", h.testNs, name, h.Resources.VMIMUID)
 
 	return h.Resources.VMIMUID
+}
+
+// SetVMDeletionTimestamp sets a deletion timestamp on the VM object by adding a finalizer
+// then initiating deletion. The finalizer prevents actual removal while DeletionTimestamp is set.
+func (h *KubeVirtResourceManager) SetVMDeletionTimestamp() {
+	gvr := schema.GroupVersionResource{
+		Group:    "kubevirt.io",
+		Version:  "v1",
+		Resource: "virtualmachines",
+	}
+
+	// Add a finalizer to prevent actual deletion
+	patch := []byte(`[{"op": "add", "path": "/metadata/finalizers", "value": ["test.calico.org/prevent-deletion"]}]`)
+	_, err := h.dynamicClient.Resource(gvr).Namespace(h.testNs).Patch(
+		context.Background(), h.vmName, k8stypes.JSONPatchType, patch, metav1.PatchOptions{})
+	Expect(err).NotTo(HaveOccurred(), "Failed to add finalizer to VM")
+
+	// Delete the VM - sets DeletionTimestamp but finalizer prevents actual removal
+	err = h.dynamicClient.Resource(gvr).Namespace(h.testNs).Delete(
+		context.Background(), h.vmName, metav1.DeleteOptions{})
+	Expect(err).NotTo(HaveOccurred(), "Failed to initiate VM deletion")
+
+	// Verify VM still exists with DeletionTimestamp set
+	vm, err := h.dynamicClient.Resource(gvr).Namespace(h.testNs).Get(
+		context.Background(), h.vmName, metav1.GetOptions{})
+	Expect(err).NotTo(HaveOccurred(), "VM should still exist (protected by finalizer)")
+	Expect(vm.GetDeletionTimestamp()).NotTo(BeNil(), "VM should have DeletionTimestamp set")
+
+	fmt.Printf("[TEST] VM %s/%s now has DeletionTimestamp set\n", h.testNs, h.vmName)
+}
+
+// SetVMIDeletionTimestamp sets a deletion timestamp on the VMI object by adding a finalizer
+// then initiating deletion. The finalizer prevents actual removal while DeletionTimestamp is set.
+func (h *KubeVirtResourceManager) SetVMIDeletionTimestamp() {
+	gvr := schema.GroupVersionResource{
+		Group:    "kubevirt.io",
+		Version:  "v1",
+		Resource: "virtualmachineinstances",
+	}
+
+	// Add a finalizer to prevent actual deletion
+	patch := []byte(`[{"op": "add", "path": "/metadata/finalizers", "value": ["test.calico.org/prevent-deletion"]}]`)
+	_, err := h.dynamicClient.Resource(gvr).Namespace(h.testNs).Patch(
+		context.Background(), h.vmName, k8stypes.JSONPatchType, patch, metav1.PatchOptions{})
+	Expect(err).NotTo(HaveOccurred(), "Failed to add finalizer to VMI")
+
+	// Delete the VMI - sets DeletionTimestamp but finalizer prevents actual removal
+	err = h.dynamicClient.Resource(gvr).Namespace(h.testNs).Delete(
+		context.Background(), h.vmName, metav1.DeleteOptions{})
+	Expect(err).NotTo(HaveOccurred(), "Failed to initiate VMI deletion")
+
+	// Verify VMI still exists with DeletionTimestamp set
+	vmi, err := h.dynamicClient.Resource(gvr).Namespace(h.testNs).Get(
+		context.Background(), h.vmName, metav1.GetOptions{})
+	Expect(err).NotTo(HaveOccurred(), "VMI should still exist (protected by finalizer)")
+	Expect(vmi.GetDeletionTimestamp()).NotTo(BeNil(), "VMI should have DeletionTimestamp set")
+
+	fmt.Printf("[TEST] VMI %s/%s now has DeletionTimestamp set\n", h.testNs, h.vmName)
 }
