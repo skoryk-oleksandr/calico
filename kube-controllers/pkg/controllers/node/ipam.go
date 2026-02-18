@@ -966,7 +966,7 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 
 	// Handle VMI-based allocations
 	if a.isVMIPAllocation() {
-		return c.vmAllocationIsValid(a)
+		return c.isVmiAllocationValid(a)
 	}
 
 	if ns == "" || pod == "" {
@@ -1062,9 +1062,9 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 	return false
 }
 
-// vmAllocationIsValid determines whether an IP allocation associated with a
+// isVmiAllocationValid determines whether an IP allocation associated with a
 // KubeVirt VirtualMachine is valid by verifying that the VM exists.
-func (c *IPAMController) vmAllocationIsValid(a *allocation) bool {
+func (c *IPAMController) isVmiAllocationValid(a *allocation) bool {
 	ns := a.attrs[ipam.AttributeNamespace]
 	vmName := a.getVMName()
 	logc := log.WithFields(a.fields())
@@ -1078,6 +1078,16 @@ func (c *IPAMController) vmAllocationIsValid(a *allocation) bool {
 
 	vm := c.getVmByNameSpaceAndName(ns, vmName, logc)
 	if vm == nil || !isVmValid(vm, logc) {
+		// Checking if standalone VMI exists, in this case we keep allocation valid even if vm not found
+		vmi, err := kubevirt.GetVMIResourceByName(context.Background(), c.virtClient, ns, vmName)
+		if err != nil {
+			logc.WithError(err).Error("Failed to get VMI resource. Assuming allocation is valid")
+			return true
+		}
+		if vmi.VMOwner == nil && vmi.DeletionTimestamp == nil && vmi.DeletionTimestamp.IsZero() {
+			logc.Debug("VMI has no owner reference, assuming allocation is valid")
+			return true
+		}
 		// Grace period for legitimate transient absence (restart, etc)
 		if withinGracePeriod(a, logc) {
 			// Still within grace period, so treat as valid for now.

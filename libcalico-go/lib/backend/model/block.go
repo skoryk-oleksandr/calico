@@ -34,7 +34,6 @@ const (
 	IPAMBlockAttributeNamespace       = "namespace"
 	IPAMBlockAttributeNode            = "node"
 	IPAMBlockAttributeVMName          = "vmName"
-	IPAMBlockAttributeVMUID           = "vmuid"
 	IPAMBlockAttributeType            = "type"
 	IPAMBlockAttributeService         = "service"
 	IPAMBlockAttributeTypeIPIP        = "ipipTunnelAddress"
@@ -57,8 +56,6 @@ const (
 
 	// UID of the VirtualMachineInstanceMigration object (only present on migration target pods)
 	IPAMBlockAttributeVMIMUID = "vmim-uid"
-
-
 
 	IPAMAffinityTypeHost    = "host"
 	IPAMAffinityTypeVirtual = "virtual"
