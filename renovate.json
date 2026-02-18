@@ -2,7 +2,8 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
   "rebaseWhen": "behind-base-branch",
-  "baseBranches": ["master"],
+  "dependencyDashboard": false,
+  "baseBranchPatterns": ["master"],
   "enabledManagers": ["gomod", "custom.regex"],
   "postUpdateOptions": ["gomodTidy"],
   "postUpgradeTasks": {
