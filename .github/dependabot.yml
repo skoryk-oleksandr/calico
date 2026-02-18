@@ -7,16 +7,6 @@ updates:
       interval: "daily"
     allow:
       - dependency-name: "golang.org/x/*"
-      - dependency-name: "k8s.io/*"
-      - dependency-name: "sigs.k8s.io/*"
-      - dependency-name: "go"
-    ignore:
-      - dependency-name: "k8s.io/*"
-        update-types: ["version-update:semver-minor", "version-update:semver-major"]
-      - dependency-name: "sigs.k8s.io/*"
-        update-types: ["version-update:semver-minor", "version-update:semver-major"]
-      - dependency-name: "go"
-        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     labels:
       - "dependencies"
       - "release-note-not-required"
@@ -25,10 +15,3 @@ updates:
       golang-x:
         patterns:
           - "golang.org/x/*"
-      k8s:
-        patterns:
-          - "k8s.io/*"
-          - "sigs.k8s.io/*"
-      golang:
-        patterns:
-          - "go"
