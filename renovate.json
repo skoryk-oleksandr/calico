@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:base"],
+  "extends": ["config:recommended"],
   "rebaseWhen": "behind-base-branch",
   "baseBranches": ["master"],
   "enabledManagers": ["gomod", "custom.regex"],
@@ -13,18 +13,18 @@
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["^metadata\\.mk$"],
+      "managerFilePatterns": ["/^metadata\\.mk$/"],
       "matchStrings": ["GO_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
-      "depName": "golang",
-      "datasource": "golang-version"
+      "depNameTemplate": "golang",
+      "datasourceTemplate": "golang-version"
     },
     {
       "customType": "regex",
-      "fileMatch": ["^metadata\\.mk$"],
+      "managerFilePatterns": ["/^metadata\\.mk$/"],
       "matchStrings": ["K8S_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
-      "depName": "kubernetes/kubernetes",
-      "datasource": "github-releases",
-      "extractVersion": "^v(?<version>.*)$"
+      "depNameTemplate": "kubernetes/kubernetes",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
     }
   ],
   "packageRules": [
