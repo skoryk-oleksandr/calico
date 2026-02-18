@@ -965,8 +965,8 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 	}
 
 	// Handle VMI-based allocations
-	if a.isVMIPAllocation() {
-		return c.isVmiAllocationValid(a)
+	if a.isVMAllocation() {
+		return c.isVmiExist(a)
 	}
 
 	if ns == "" || pod == "" {
@@ -1062,9 +1062,8 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 	return false
 }
 
-// isVmiAllocationValid determines whether an IP allocation associated with a
-// KubeVirt VirtualMachine is valid by verifying that the VM exists.
-func (c *IPAMController) isVmiAllocationValid(a *allocation) bool {
+// isVmiExist determines whether an IP allocation associated with a KubeVirt VirtualMachine.
+func (c *IPAMController) isVmiExist(a *allocation) bool {
 	ns := a.attrs[ipam.AttributeNamespace]
 	vmName := a.getVMName()
 	logc := log.WithFields(a.fields())
@@ -1076,15 +1075,22 @@ func (c *IPAMController) isVmiAllocationValid(a *allocation) bool {
 		return true
 	}
 
-	vm := c.getVmByNameSpaceAndName(ns, vmName, logc)
-	if vm == nil || !isVmValid(vm, logc) {
+	vm, err := c.getVmByName(ns, vmName, logc)
+	if err != nil {
+		logc.WithError(err).Error("Failed to get VM resource. Assuming allocation is valid")
+		return true
+	}
+	if vm == nil {
 		// Checking if standalone VMI exists, in this case we keep allocation valid even if vm not found
 		vmi, err := kubevirt.GetVMIResourceByName(context.Background(), c.virtClient, ns, vmName)
 		if err != nil {
-			logc.WithError(err).Error("Failed to get VMI resource. Assuming allocation is valid")
-			return true
+			if !errors.IsNotFound(err) {
+				logc.WithError(err).Warnf("Failed to query VMI, skipping VMI existence check for %s/%s", ns, vmName)
+				return true
+			}
+			logc.WithError(err).Error("VMI is not found, assume it's a leak")
 		}
-		if vmi.VMOwner == nil && vmi.DeletionTimestamp == nil && vmi.DeletionTimestamp.IsZero() {
+		if vmi != nil && vmi.VMOwner == nil {
 			logc.Debug("VMI has no owner reference, assuming allocation is valid")
 			return true
 		}
@@ -1097,62 +1103,30 @@ func (c *IPAMController) isVmiAllocationValid(a *allocation) bool {
 		return false
 	}
 
-	// VM exists and is valid, so allocation is valid.
+	// VM exists and is valid
 	return true
 }
 
-// getVmiByNsAndName returns the VirtualMachineInstance only if a VMI with the
-// given name exists, is not being deleted, and its UID matches the expected
-// execution UID.
-//
-// A nil VMI (with nil error) indicates that the VMI either no longer exists or
-// represents a different execution and therefore does not own the IP.
-func (c *IPAMController) getVmiByNsAndName(ns, vmiName string) (*kubevirtv1.VirtualMachineInstance, error) {
-	vmi, err := c.virtClient.VirtualMachineInstance(ns).
-		Get(context.Background(), vmiName, metav1.GetOptions{})
-	if err != nil {
-		// Not found or other error; caller decides policy.
-		return nil, err
-	}
-
-	// If the VMI is already deleting, treat as not existing for ownership purposes.
-	// (Execution is ending; let grace/migration logic handle transitions.)
-	if vmi.DeletionTimestamp != nil && !vmi.DeletionTimestamp.IsZero() {
-		return nil, nil
-	}
-
-	return nil, nil
-}
-
-func (c *IPAMController) getVmByNameSpaceAndName(
+func (c *IPAMController) getVmByName(
 	ns, vmName string,
 	logc *log.Entry,
-) *kubevirtv1.VirtualMachine {
-	if vmName != "" {
-		vm, err := c.virtClient.VirtualMachine(ns).
-			Get(context.Background(), vmName, metav1.GetOptions{})
-		if err != nil {
-			logc.WithError(err).Debugf("VM for allocation is not found, namespace = %s, vmName = %s", ns, vmName)
-			return nil
+) (*kubevirtv1.VirtualMachine, error) {
+	if vmName == "" || c.virtClient == nil {
+		return nil, fmt.Errorf("insufficient data to validate VMI allocation, cannot check VM existence. Namespace = %s, vmName = %s", ns, vmName)
+	}
+
+	vm, err := c.virtClient.VirtualMachine(ns).
+		Get(context.Background(), vmName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			logc.WithError(err).Warnf("VM is not found, vmName = %s, namespace = %s", vmName, ns)
+			return nil, nil
 		}
 
-		return vm
+		return nil, fmt.Errorf("Failed to query VM, vmName = %s, namespace = %s: %w", vmName, ns, err)
 	}
 
-	return nil
-}
-
-// isVmValid returns whether a VirtualMachine still intends to retain ownership
-// of its IP address, based on VM-level intent rather than VMI or pod state.
-//
-// An IP should be released when the VM is being deleted or explicitly halted.
-func isVmValid(vm *kubevirtv1.VirtualMachine, logc *log.Entry) bool {
-	if vm.DeletionTimestamp != nil && !vm.DeletionTimestamp.IsZero() {
-		logc.Debug("VM is being deleted")
-		return false
-	}
-
-	return true
+	return vm, nil
 }
 
 func withinGracePeriod(a *allocation, logc *log.Entry) bool {
@@ -1161,65 +1135,9 @@ func withinGracePeriod(a *allocation, logc *log.Entry) bool {
 		return true
 	}
 	if time.Since(*a.leakedAt) < VM_RECREATION_GRACE_PERIOD {
-		logc.Debug("Within VMI recreation grace period")
+		logc.Debug("Within VM recreation grace period")
 		return true
 	}
-	return false
-}
-
-func getVMOwnerRef(vmi *kubevirtv1.VirtualMachineInstance) *metav1.OwnerReference {
-	for i := range vmi.OwnerReferences {
-		ref := &vmi.OwnerReferences[i]
-		if ref.Kind == "VirtualMachine" &&
-			strings.HasPrefix(ref.APIVersion, "kubevirt.io/") {
-			return ref
-		}
-	}
-	return nil
-}
-
-// isMigrating returns true if there is an active (non-final) KubeVirt live migration
-// for the given VMI.
-//
-// This is used by IPAM GC to tolerate temporary VMI absence during live migration.
-// While a migration is in progress, pod and VMI transitions are expected, but the
-// VM still intends to retain ownership of its IP address.
-func (c *IPAMController) isMigrating(ns, vmiName string) bool {
-	if c.virtClient == nil {
-		// If we cannot determine migration state, be conservative and
-		// assume not migrating.
-		return false
-	}
-
-	ctx := context.Background()
-
-	migrations, err := c.virtClient.
-		VirtualMachineInstanceMigration(ns).
-		List(ctx, metav1.ListOptions{})
-	if err != nil {
-		// On error, be conservative: do NOT assume migration,
-		// otherwise we could leak IPs forever.
-		log.WithError(err).
-			WithFields(map[string]interface{}{
-				"namespace": ns,
-				"vmi":       vmiName,
-			}).
-			Warn("Failed to list VMI migrations")
-		return false
-	}
-
-	for _, mig := range migrations.Items {
-		if mig.Spec.VMIName != vmiName {
-			continue
-		}
-
-		// Migration is active unless it is in a final phase
-		if mig.Status.Phase != kubevirtv1.MigrationSucceeded &&
-			mig.Status.Phase != kubevirtv1.MigrationFailed {
-			return true
-		}
-	}
-
 	return false
 }
 

@@ -220,57 +220,7 @@ var _ = Describe("IPAM controller UTs", func() {
 			virtClient.AddVM(vm)
 
 			allocation := makeVMIAllocation(namespace, vmName)
-			Expect(c.isVmiAllocationValid(allocation)).To(BeTrue())
-		})
-
-		It("should treat VM with DeletionTimestamp as invalid after Grace Period", func() {
-			c.Start(stopChan)
-			namespace := "default"
-			vmName := "test-vm"
-			vmUID := "vm-uid"
-
-			now := metav1.Now()
-			vm := &kubevirtv1.VirtualMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:              vmName,
-					Namespace:         namespace,
-					UID:               types.UID(vmUID),
-					DeletionTimestamp: &now,
-				},
-			}
-			virtClient.AddVM(vm)
-
-			allocation := makeVMIAllocation(namespace, vmName)
-			staleTime := time.Now().Add(-VM_RECREATION_GRACE_PERIOD - time.Second)
-			allocation.leakedAt = &staleTime
-			Expect(c.isVmiAllocationValid(allocation)).To(BeFalse())
-		})
-
-		It("should treat VM with DeletionTimestamp as valid within the Grace period", func() {
-			c.Start(stopChan)
-			namespace := "default"
-			vmName := "test-vm"
-			vmUID := "vm-uid"
-
-			runStrategy := kubevirtv1.RunStrategyAlways
-			now := metav1.Now()
-			vm := &kubevirtv1.VirtualMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:              vmName,
-					Namespace:         namespace,
-					UID:               types.UID(vmUID),
-					DeletionTimestamp: &now,
-				},
-				Spec: kubevirtv1.VirtualMachineSpec{
-					RunStrategy: &runStrategy,
-				},
-			}
-			virtClient.AddVM(vm)
-
-			allocation := makeVMIAllocation(namespace, vmName)
-			staleTime := time.Now().Add(-time.Second)
-			allocation.leakedAt = &staleTime
-			Expect(c.isVmiAllocationValid(allocation)).To(BeTrue())
+			Expect(c.isVmiExist(allocation)).To(BeTrue())
 		})
 
 		It("should treat allocation as invalid if VM not found by ns and name and Grace Period is over", func() {
@@ -297,7 +247,7 @@ var _ = Describe("IPAM controller UTs", func() {
 			allocation := makeVMIAllocation(namespace, "invalid-vm-name")
 			staleTime := time.Now().Add(-VM_RECREATION_GRACE_PERIOD - time.Second)
 			allocation.leakedAt = &staleTime
-			Expect(c.isVmiAllocationValid(allocation)).To(BeFalse())
+			Expect(c.isVmiExist(allocation)).To(BeFalse())
 		})
 
 		It("should treat allocation as valid if VM not found by ns and name and within Grace Period", func() {
@@ -324,14 +274,14 @@ var _ = Describe("IPAM controller UTs", func() {
 			allocation := makeVMIAllocation(namespace, "invalid-vm-name")
 			staleTime := time.Now().Add(-time.Second)
 			allocation.leakedAt = &staleTime
-			Expect(c.isVmiAllocationValid(allocation)).To(BeTrue())
+			Expect(c.isVmiExist(allocation)).To(BeTrue())
 		})
 
 		It("should treat allocation as valid if namespace or vmName attributes are missing", func() {
 			c.Start(stopChan)
 
 			allocation := makeVMIAllocation("", "")
-			Expect(c.isVmiAllocationValid(allocation)).To(BeTrue())
+			Expect(c.isVmiExist(allocation)).To(BeTrue())
 		})
 	})
 

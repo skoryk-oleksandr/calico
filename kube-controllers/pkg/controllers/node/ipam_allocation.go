@@ -159,7 +159,7 @@ func (a *allocation) fields() log.Fields {
 		f["pod"] = fmt.Sprintf("%s/%s", ns, pod)
 	}
 
-	if a.isVMIPAllocation() {
+	if a.isVMAllocation() {
 		ns := a.attrs[ipam.AttributeNamespace]
 		vmi := a.getVMName()
 		if ns != "" && vmi != "" {
@@ -230,7 +230,7 @@ func (a *allocation) isPodIP() bool {
 	return ns != "" && pod != ""
 }
 
-func (a *allocation) isVMIPAllocation() bool {
+func (a *allocation) isVMAllocation() bool {
 	_, ok := a.attrs[ipam.AttributeVMName]
 	return ok
 }
