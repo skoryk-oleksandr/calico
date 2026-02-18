@@ -1,0 +1,20 @@
+name: Renovate
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Renovate
+        uses: renovatebot/github-action@v46.1.1
+        with:
+          token: ${{ secrets.CALI_BOT_PAT }}
+          configurationFile: renovate.json
+        env:
+          RENOVATE_ALLOWED_COMMANDS: '["^make gen-deps-files$"]'

@@ -1,0 +1,66 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:base"],
+  "rebaseWhen": "behind-base-branch",
+  "baseBranches": ["master"],
+  "enabledManagers": ["gomod", "custom.regex"],
+  "postUpdateOptions": ["gomodTidy"],
+  "postUpgradeTasks": {
+    "commands": ["make gen-deps-files"],
+    "fileFilters": ["**/deps.txt"],
+    "executionMode": "branch"
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^metadata\\.mk$"],
+      "matchStrings": ["GO_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depName": "golang",
+      "datasource": "golang-version"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^metadata\\.mk$"],
+      "matchStrings": ["K8S_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depName": "kubernetes/kubernetes",
+      "datasource": "github-releases",
+      "extractVersion": "^v(?<version>.*)$"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Disable all Go module updates by default",
+      "matchManagers": ["gomod"],
+      "enabled": false
+    },
+    {
+      "description": "Enable and group k8s.io patch updates",
+      "matchPackageNames": ["k8s.io/**", "sigs.k8s.io/**"],
+      "matchUpdateTypes": ["patch"],
+      "enabled": true,
+      "groupName": "go-and-k8s-patch-updates",
+      "labels": ["dependencies"]
+    },
+    {
+      "description": "Enable and group Go toolchain patch updates",
+      "matchDepNames": ["go"],
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch"],
+      "enabled": true,
+      "groupName": "go-and-k8s-patch-updates",
+      "labels": ["dependencies"]
+    },
+    {
+      "description": "Group metadata.mk version patch updates",
+      "matchManagers": ["custom.regex"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "go-and-k8s-patch-updates",
+      "labels": ["dependencies"]
+    },
+    {
+      "description": "Block all minor and major updates",
+      "matchUpdateTypes": ["minor", "major"],
+      "enabled": false
+    }
+  ]
+}
