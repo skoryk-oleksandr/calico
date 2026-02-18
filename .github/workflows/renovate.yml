@@ -1,4 +1,4 @@
-name: Renovate
+name: Renovate update dependencies
 
 on:
   schedule:
