@@ -3,6 +3,7 @@
   "extends": ["config:recommended"],
   "rebaseWhen": "behind-base-branch",
   "dependencyDashboard": false,
+  "statusChecks": null,
   "baseBranchPatterns": ["master"],
   "enabledManagers": ["gomod", "custom.regex"],
   "postUpdateOptions": ["gomodTidy"],
@@ -58,8 +59,8 @@
       "labels": ["dependencies"]
     },
     {
-      "description": "Block all minor and major updates",
-      "matchUpdateTypes": ["minor", "major"],
+      "description": "Block all minor, major, and digest updates",
+      "matchUpdateTypes": ["minor", "major", "digest"],
       "enabled": false
     }
   ]
