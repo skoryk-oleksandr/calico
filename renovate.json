@@ -52,10 +52,12 @@
       "enabled": true
     },
     {
-      "description": "Enable Go toolchain",
-      "matchDepNames": ["go"],
+      "description": "Enable Go toolchain patch updates",
+      "matchDatasources": ["golang-version"],
       "matchManagers": ["gomod"],
-      "enabled": true
+      "enabled": true,
+      "rangeStrategy": "bump",
+      "matchUpdateTypes": ["patch"]
     },
     {
       "description": "Block all minor, major, and digest updates",
