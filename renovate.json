@@ -14,7 +14,7 @@
   "postUpgradeTasks": {
     "commands": ["make gen-deps-files"],
     "fileFilters": ["**/deps.txt"],
-    "executionMode": "branch"
+    "executionMode": "update"
   },
   "customManagers": [
     {
