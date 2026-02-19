@@ -38,6 +38,14 @@
       "depNameTemplate": "kubernetes/kubernetes",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^metadata\\.mk$/"],
+      "matchStrings": ["CALICO_BASE_VER=(?<currentValue>ubi9-\\d+)"],
+      "depNameTemplate": "calico/base",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "regex:^ubi9-(?<patch>\\d+)$"
     }
   ],
   "packageRules": [
