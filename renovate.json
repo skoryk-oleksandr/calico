@@ -69,16 +69,10 @@
       "enabled": true
     },
     {
-      "description": "Group k8s and Go updates",
-      "matchPackageNames": ["k8s.io/**", "sigs.k8s.io/**"],
-      "matchDepNames": ["go", "golang", "kubernetes/kubernetes"],
-      "groupName": "k8s-and-go-updates",
-      "labels": ["dependencies"]
-    },
-    {
-      "description": "Group all other updates",
-      "matchPackageNames": ["*", "!k8s.io/**", "!sigs.k8s.io/**", "!golang.org/x/**"],
-      "groupName": "general-dependency-updates",
+      "description": "Group all updates into one PR",
+      "matchPackageNames": ["*"],
+      "matchDepNames": ["*"],
+      "groupName": "dependency-updates",
       "labels": ["dependencies"]
     }
   ]
