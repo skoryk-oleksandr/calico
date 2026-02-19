@@ -34,10 +34,21 @@
   ],
   "packageRules": [
     {
-      "description": "Disable non-k8s Go module updates",
+      "description": "Disable all Go module updates",
       "matchManagers": ["gomod"],
-      "matchPackageNames": ["!k8s.io/**", "!sigs.k8s.io/**", "!go"],
       "enabled": false
+    },
+    {
+      "description": "Enable k8s.io dependencies",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["k8s.io/**", "sigs.k8s.io/**"],
+      "enabled": true
+    },
+    {
+      "description": "Enable Go toolchain",
+      "matchDepNames": ["go"],
+      "matchManagers": ["gomod"],
+      "enabled": true
     },
     {
       "description": "Group k8s.io patch updates",
