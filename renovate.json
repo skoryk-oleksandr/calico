@@ -40,6 +40,12 @@
       "enabled": true
     },
     {
+      "description": "Enable golang.org/x libraries",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["golang.org/x/**"],
+      "enabled": true
+    },
+    {
       "description": "Enable Go toolchain",
       "matchDepNames": ["go"],
       "matchManagers": ["gomod"],
@@ -49,6 +55,13 @@
       "description": "Group k8s.io patch updates",
       "matchPackageNames": ["k8s.io/**"],
       "matchUpdateTypes": ["patch"],
+      "groupName": "go-and-k8s-patch-updates",
+      "labels": ["dependencies"]
+    },
+    {
+      "description": "Group golang.org/x patch updates",
+      "matchPackageNames": ["golang.org/x/**"],
+      "matchUpdateTypes": ["patch", "minor"],
       "groupName": "go-and-k8s-patch-updates",
       "labels": ["dependencies"]
     },
@@ -71,6 +84,14 @@
       "description": "Block all minor, major, and digest updates",
       "matchUpdateTypes": ["minor", "major", "digest"],
       "enabled": false
+    },
+    {
+      "description": "Allow golang.org/x minor updates",
+      "matchPackageNames": ["golang.org/x/**"],
+      "matchUpdateTypes": ["minor"],
+      "enabled": true,
+      "groupName": "go-and-k8s-patch-updates",
+      "labels": ["dependencies"]
     }
   ]
 }
