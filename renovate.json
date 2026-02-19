@@ -26,6 +26,13 @@
     },
     {
       "customType": "regex",
+      "managerFilePatterns": ["/^go\\.mod$/", "/^api\\/go\\.mod$/"],
+      "matchStrings": ["\\ngo (?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "golang",
+      "datasourceTemplate": "golang-version"
+    },
+    {
+      "customType": "regex",
       "managerFilePatterns": ["/^metadata\\.mk$/"],
       "matchStrings": ["K8S_BUILD_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
       "depNameTemplate": "kubernetes/kubernetes",
@@ -50,14 +57,6 @@
       "matchManagers": ["gomod"],
       "matchPackageNames": ["golang.org/x/**"],
       "enabled": true
-    },
-    {
-      "description": "Enable Go toolchain patch updates",
-      "matchDatasources": ["golang-version"],
-      "matchManagers": ["gomod"],
-      "enabled": true,
-      "rangeStrategy": "bump",
-      "matchUpdateTypes": ["patch"]
     },
     {
       "description": "Block all minor, major, and digest updates",
