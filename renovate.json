@@ -6,6 +6,7 @@
   "baseBranchPatterns": ["master"],
   "separateMinorPatch": true,
   "enabledManagers": ["gomod", "custom.regex"],
+  "prHourlyLimit": 20,
   "gomod": {
     "managerFilePatterns": ["/^go\\.mod$/"]
   },
@@ -36,7 +37,7 @@
     {
       "description": "Enable k8s.io dependencies",
       "matchManagers": ["gomod"],
-      "matchPackageNames": ["k8s.io/**", "sigs.k8s.io/**"],
+      "matchPackageNames": ["k8s.io/**"],
       "enabled": true
     },
     {
@@ -52,35 +53,6 @@
       "enabled": true
     },
     {
-      "description": "Group k8s.io patch updates",
-      "matchPackageNames": ["k8s.io/**"],
-      "matchUpdateTypes": ["patch"],
-      "groupName": "go-and-k8s-patch-updates",
-      "labels": ["dependencies"]
-    },
-    {
-      "description": "Group golang.org/x patch updates",
-      "matchPackageNames": ["golang.org/x/**"],
-      "matchUpdateTypes": ["patch", "minor"],
-      "groupName": "go-and-k8s-patch-updates",
-      "labels": ["dependencies"]
-    },
-    {
-      "description": "Group Go toolchain patch updates",
-      "matchDepNames": ["go"],
-      "matchManagers": ["gomod"],
-      "matchUpdateTypes": ["patch"],
-      "groupName": "go-and-k8s-patch-updates",
-      "labels": ["dependencies"]
-    },
-    {
-      "description": "Group metadata.mk version patch updates",
-      "matchManagers": ["custom.regex"],
-      "matchUpdateTypes": ["patch"],
-      "groupName": "go-and-k8s-patch-updates",
-      "labels": ["dependencies"]
-    },
-    {
       "description": "Block all minor, major, and digest updates",
       "matchUpdateTypes": ["minor", "major", "digest"],
       "enabled": false
@@ -89,8 +61,11 @@
       "description": "Allow golang.org/x minor updates",
       "matchPackageNames": ["golang.org/x/**"],
       "matchUpdateTypes": ["minor"],
-      "enabled": true,
-      "groupName": "go-and-k8s-patch-updates",
+      "enabled": true
+    },
+    {
+      "description": "Group all enabled updates into a single PR",
+      "groupName": "all-dependency-updates",
       "labels": ["dependencies"]
     }
   ]
