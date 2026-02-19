@@ -65,6 +65,7 @@
     },
     {
       "description": "Group all enabled updates into a single PR",
+      "matchPackageNames": ["*"],
       "groupName": "all-dependency-updates",
       "labels": ["dependencies"]
     }
