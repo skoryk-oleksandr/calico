@@ -5,6 +5,9 @@
   "dependencyDashboard": false,
   "baseBranchPatterns": ["master"],
   "enabledManagers": ["gomod", "custom.regex"],
+  "gomod": {
+    "managerFilePatterns": ["/^go\\.mod$/"]
+  },
   "postUpdateOptions": ["gomodTidy"],
   "postUpgradeTasks": {
     "commands": ["make gen-deps-files"],
