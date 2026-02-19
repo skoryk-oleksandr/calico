@@ -4,6 +4,7 @@
   "rebaseWhen": "behind-base-branch",
   "dependencyDashboard": false,
   "baseBranchPatterns": ["master"],
+  "separateMinorPatch": true,
   "enabledManagers": ["gomod", "custom.regex"],
   "gomod": {
     "managerFilePatterns": ["/^go\\.mod$/"]
@@ -25,7 +26,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": ["/^metadata\\.mk$/"],
-      "matchStrings": ["K8S_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "matchStrings": ["K8S_BUILD_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
       "depNameTemplate": "kubernetes/kubernetes",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
