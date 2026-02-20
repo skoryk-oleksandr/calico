@@ -2,18 +2,18 @@
 # This file contains Makefile configuration parameters and metadata for this branch.
 #################################################################################################
 
-# The version of calico/go-build and calico/base to use.
+# The project Go version
 GO_VERSION=1.25.5
+# Version of Kubernetes to use for dependencies, tests, rancher/kubectl, and kubectl binary release.
+K8S_VERSION=v1.34.2
+# The version of LLVM to use for go-build and calico/base images.
 LLVM_VERSION=18.1.8
-K8S_BUILD_VERSION=1.34.2
-GO_BUILD_VER=$(GO_VERSION)-llvm$(LLVM_VERSION)-k8s$(K8S_BUILD_VERSION)
+# The version of calico/go-build and calico/base to use.
+GO_BUILD_VER=$(GO_VERSION)-llvm$(LLVM_VERSION)-k8s$(K8S_VERSION:v%=%)
 CALICO_BASE_VER=ubi9-1764706938
 
 # Env var to ACK Ginkgo deprecation warnings, may need updating with go-build.
 ACK_GINKGO=ACK_GINKGO_DEPRECATIONS=1.16.5
-
-# Version of Kubernetes to use for tests, rancher/kubectl, and kubectl binary release.
-K8S_VERSION=v1.34.2
 
 # Version of various tools used in the build and tests.
 COREDNS_VERSION=1.5.2
