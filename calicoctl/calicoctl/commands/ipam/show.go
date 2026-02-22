@@ -91,12 +91,18 @@ func getBorrowedIPs(ctx context.Context, ippoolClient clientv3.IPPoolInterface, 
 					if blockOwner != borrowingNode {
 						bIP := borrowedIP{block: b.CIDR.IPNet.String(), blockOwner: blockOwner, borrowingNode: borrowingNode}
 						bIP.addr = b.OrdinalToIP(i).String()
-						if _, ok := attributes.ActiveOwnerAttrs[model.IPAMBlockAttributePod]; ok {
-							bIP.allocatedTo = fmt.Sprintf("%s/%s", attributes.ActiveOwnerAttrs[model.IPAMBlockAttributeNamespace],
-								attributes.ActiveOwnerAttrs[model.IPAMBlockAttributePod])
+
+						if attributes.HandleID != nil {
+							bIP.allocatedTo = *attributes.HandleID
+						}
+
+						// Determine allocation type
+						if _, ok := attributes.ActiveOwnerAttrs[model.IPAMBlockAttributeVMIName]; ok {
+							bIP.allocationType = "vmi"
+						} else if _, ok := attributes.ActiveOwnerAttrs[model.IPAMBlockAttributePod]; ok {
 							bIP.allocationType = model.IPAMBlockAttributePod
-						} else if _, ok := attributes.ActiveOwnerAttrs[model.IPAMBlockAttributeType]; ok {
-							bIP.allocationType = attributes.ActiveOwnerAttrs[model.IPAMBlockAttributeType]
+						} else if t, ok := attributes.ActiveOwnerAttrs[model.IPAMBlockAttributeType]; ok {
+							bIP.allocationType = t
 						}
 						details = append(details, &bIP)
 					}
@@ -160,15 +166,32 @@ func showIP(ctx context.Context, ipamClient ipam.Interface, passedIP any) error 
 
 	// IP address is assigned.
 	fmt.Printf("IP %s is in use\n", ip)
-	attr := allocAttr.ActiveOwnerAttrs
-	if len(attr) != 0 {
-		fmt.Println("Attributes:")
-		for k, v := range attr {
+
+	// Print HandleID
+	if allocAttr.HandleID != nil {
+		fmt.Printf("Handle ID: %s\n", *allocAttr.HandleID)
+	} else {
+		fmt.Println("Handle ID: <none>")
+	}
+
+	// Print Active Owner Attributes
+	if len(allocAttr.ActiveOwnerAttrs) > 0 {
+		fmt.Println("Active Owner Attributes:")
+		for k, v := range allocAttr.ActiveOwnerAttrs {
 			fmt.Printf("  %v: %v\n", k, v)
 		}
 	} else {
-		fmt.Println("No attributes defined")
+		fmt.Println("No Active Owner attributes defined")
 	}
+
+	// Print Alternate Owner Attributes
+	if len(allocAttr.AlternateOwnerAttrs) > 0 {
+		fmt.Println("Alternate Owner Attributes:")
+		for k, v := range allocAttr.AlternateOwnerAttrs {
+			fmt.Printf("  %v: %v\n", k, v)
+		}
+	}
+
 	return nil
 }
 

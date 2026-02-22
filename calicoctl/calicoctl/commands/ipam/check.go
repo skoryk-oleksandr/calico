@@ -693,16 +693,25 @@ func formatAttrs(attribute model.AllocationAttribute) string {
 	if attribute.HandleID != nil {
 		primary = *attribute.HandleID
 	}
-	var keys []string
-	for k := range attribute.ActiveOwnerAttrs {
-		keys = append(keys, k)
+
+	// Active owner attributes (existing "Extra")
+	var extraKVs []string
+	for k, v := range attribute.ActiveOwnerAttrs {
+		extraKVs = append(extraKVs, fmt.Sprintf("%s=%s", k, v))
 	}
-	sort.Strings(keys)
-	var kvs []string
-	for _, k := range keys {
-		kvs = append(kvs, fmt.Sprintf("%s=%s", k, attribute.ActiveOwnerAttrs[k]))
+
+	base := fmt.Sprintf("Main:%s Extra:%s", primary, strings.Join(extraKVs, ","))
+
+	// Alternate owner attributes (print only if not empty)
+	if len(attribute.AlternateOwnerAttrs) > 0 {
+		var altKVs []string
+		for k, v := range attribute.AlternateOwnerAttrs {
+			altKVs = append(altKVs, fmt.Sprintf("%s=%s", k, v))
+		}
+		return fmt.Sprintf("%s Alternate:%s", base, strings.Join(altKVs, ","))
 	}
-	return fmt.Sprintf("Main:%s Extra:%s", primary, strings.Join(kvs, ","))
+
+	return base
 }
 
 type ownerRecord struct {
