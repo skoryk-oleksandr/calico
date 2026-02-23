@@ -3,7 +3,7 @@
   "extends": ["config:recommended"],
   "rebaseWhen": "behind-base-branch",
   "dependencyDashboard": false,
-  "baseBranchPatterns": ["master"],
+  "baseBranchPatterns": ["master", "release-v3.31"],
   "separateMinorPatch": true,
   "enabledManagers": ["gomod", "custom.regex"],
   "prHourlyLimit": 20,
