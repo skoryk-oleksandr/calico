@@ -694,24 +694,37 @@ func formatAttrs(attribute model.AllocationAttribute) string {
 		primary = *attribute.HandleID
 	}
 
-	// Active owner attributes (existing "Extra")
-	var extraKVs []string
-	for k, v := range attribute.ActiveOwnerAttrs {
-		extraKVs = append(extraKVs, fmt.Sprintf("%s=%s", k, v))
+	// ---- ActiveOwnerAttrs (sorted) ----
+	var keys []string
+	for k := range attribute.ActiveOwnerAttrs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var kvs []string
+	for _, k := range keys {
+		kvs = append(kvs, fmt.Sprintf("%s=%s", k, attribute.ActiveOwnerAttrs[k]))
 	}
 
-	base := fmt.Sprintf("Main:%s Extra:%s", primary, strings.Join(extraKVs, ","))
+	result := fmt.Sprintf("Main:%s Extra:%s", primary, strings.Join(kvs, ","))
 
-	// Alternate owner attributes (print only if not empty)
+	// ---- AlternateOwnerAttrs (sorted, printed only if not empty) ----
 	if len(attribute.AlternateOwnerAttrs) > 0 {
-		var altKVs []string
-		for k, v := range attribute.AlternateOwnerAttrs {
-			altKVs = append(altKVs, fmt.Sprintf("%s=%s", k, v))
+		var altKeys []string
+		for k := range attribute.AlternateOwnerAttrs {
+			altKeys = append(altKeys, k)
 		}
-		return fmt.Sprintf("%s Alternate:%s", base, strings.Join(altKVs, ","))
+		sort.Strings(altKeys)
+
+		var altKvs []string
+		for _, k := range altKeys {
+			altKvs = append(altKvs, fmt.Sprintf("%s=%s", k, attribute.AlternateOwnerAttrs[k]))
+		}
+
+		result = fmt.Sprintf("%s Alternate:%s", result, strings.Join(altKvs, ","))
 	}
 
-	return base
+	return result
 }
 
 type ownerRecord struct {
