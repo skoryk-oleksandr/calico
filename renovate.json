@@ -4,12 +4,16 @@
   "rebaseWhen": "behind-base-branch",
   "dependencyDashboard": false,
   "baseBranchPatterns": ["master", "release-v3.31"],
-  "additionalBranchPrefix": "{{baseBranch}}-",
+  "branchPrefix": "renovate/{{baseBranch}}/",
   "separateMinorPatch": true,
   "enabledManagers": ["gomod", "custom.regex"],
   "prHourlyLimit": 20,
   "gomod": {
     "managerFilePatterns": ["/^go\\.mod$/"]
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
   },
   "postUpdateOptions": ["gomodTidy"],
   "postUpgradeTasks": {

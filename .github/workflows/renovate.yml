@@ -22,4 +22,5 @@ jobs:
         env:
           RENOVATE_REPOSITORIES: ${{ github.repository }}
           RENOVATE_ALLOWED_COMMANDS: '["^make gen-deps-files$"]'
+          RENOVATE_GIT_AUTHOR: "marvin-tigera <marvin-tigera@users.noreply.github.com>"
           LOG_LEVEL: debug
