@@ -17,11 +17,6 @@
     "labels": ["security"]
   },
   "postUpdateOptions": ["gomodTidy"],
-  "postUpgradeTasks": {
-    "commands": ["make gen-deps-files"],
-    "fileFilters": ["**/deps.txt"],
-    "executionMode": "update"
-  },
   "customManagers": [
     {
       "customType": "regex",
@@ -89,6 +84,15 @@
       "matchDepNames": ["*"],
       "groupName": "dependency-updates",
       "labels": ["dependencies"]
+    },
+    {
+      "description": "Run gen-deps-files on selected branches only",
+      "matchBaseBranches": ["master", "release-v3.31"],
+      "postUpgradeTasks": {
+        "commands": ["make gen-deps-files"],
+        "fileFilters": ["**/deps.txt"],
+        "executionMode": "branch"
+      }
     }
   ]
 }
