@@ -43,10 +43,10 @@
     {
       "customType": "regex",
       "managerFilePatterns": ["/^metadata\\.mk$/"],
-      "matchStrings": ["CALICO_BASE_VER=(?<currentValue>ubi9-\\d+)"],
+      "matchStrings": ["CALICO_BASE_VER=(?<currentValue>ubi\\d+-\\d+)"],
       "depNameTemplate": "calico/base",
       "datasourceTemplate": "docker",
-      "versioningTemplate": "regex:^ubi9-(?<patch>\\d+)$"
+      "versioningTemplate": "regex:^(?<compatibility>ubi\\d+)-(?<patch>\\d+)$"
     }
   ],
   "packageRules": [
