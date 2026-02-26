@@ -5,7 +5,7 @@ name: IPTables
 agent:
   machine:
     type: c1-standard-1
-    os_image: ubuntu2004
+    os_image: ubuntu2204
 
 execution_time_limit:
   hours: 12
