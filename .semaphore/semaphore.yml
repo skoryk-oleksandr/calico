@@ -12,7 +12,7 @@ execution_time_limit:
 
 global_job_config:
   prologue:
-    commands_file: ../scripts/global_prologue.sh
+    commands_file: ~/calico/.semaphore/end-to-end/scripts/global_prologue.sh
   epilogue:
     always:
       commands:
