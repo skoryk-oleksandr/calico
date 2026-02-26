@@ -4,7 +4,7 @@ name: NFTables
 
 agent:
   machine:
-    type: c1-standard-1 # Adequate for most e2e tests, since clusters run on separate machines
+    type: c1-standard-1 # Adequate for the most e2e tests, since clusters run on separate machines
     os_image: ubuntu2204
 
 execution_time_limit:
