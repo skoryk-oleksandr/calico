@@ -23,7 +23,7 @@ global_job_config:
   env_vars:
     # This should match default flags with the additional skip of the "Proxy version v1". There is a problem with the server pod failing to bind to the port for listening.
     - name: K8S_E2E_FLAGS
-      value: --ginkgo.focus=(\[sig-calico\]|\[Conformance\]) --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|Proxy.version.v1.should.proxy.through.a.service.and.a.pod|WireGuard)
+      value: --ginkgo.focus=should.correctly.implement.Host.Endpoint.NetworkPolicy --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|Proxy.version.v1.should.proxy.through.a.service.and.a.pod|WireGuard)
     - name: DATAPLANE
       value: "CalicoIptables"
     - name: IPV4_POD_CIDR
@@ -34,6 +34,9 @@ global_job_config:
       value: "true"
     - name: PRIVATE_REGISTRY
       value: "quay.io/"
+    - name: K8S_E2E_IMAGE
+      value: "gcr.io/tigera-dev/k8s-e2e@sha256:805cc9d28cff0a0cee4de84a5fe32072461646e4bd65a89a82a332203cd9f421"
+
 
 blocks:
   # This is the old wireguard tests
@@ -50,8 +53,6 @@ blocks:
             - env_var: K8S_VERSION
               values: ["stable"]
           env_vars:
-            - name: K8S_E2E_FLAGS
-              value: --ginkgo.focus=(\[sig-calico\]|\[Conformance\]) --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\])
             - name: DISABLE_IPIP
               value: "true"
               # Single VPC only
@@ -74,8 +75,6 @@ blocks:
             # The skip "EndpointSlice\|Services\sshould" is needed to skip Endpoint slice tests which are only possible in k8s 1.21+
             # The skip "Ingress.API|IngressClass.API" is needed to skip Ingress tests which are only possible in k8s 1.21+
             # The skip "Proxy.version.v1.*pod.and.service.Proxy.\[" is needed to skip an upstream test that only works on k8s 1.24+
-            - name: K8S_E2E_FLAGS
-              value: --ginkgo.focus=(\[sig-calico\]|\[Conformance\]) --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|EndpointSlice|Services\sshould|Ingress.API|IngressClass.API|Proxy.version.v1.*pod.and.service.Proxy.\[)
             - name: DISABLE_IPIP
               value: "true"
               # Single VPC only
@@ -108,9 +107,6 @@ blocks:
               value: AKS
               # External node is false, so we should skip external node tests: "ExternalNode|outside.the.cluster|external.to.nodeport"
               # This uses AKS-CNI, so Strict Affinity and MTU tests do not apply: "MTU|StrictAffinity"
-            - name: K8S_E2E_FLAGS
-              value: --ginkgo.focus=(\[sig-calico\]|\[Conformance\]|Feature:NetworkPolicy) --ginkgo.skip=(Slow|Disruptive|calient|allow.ingress.access.from.updated.pod|Dataplane:LB|outside.the.cluster|MTU|ExternalNode|external.to.nodeport|StrictAffinity|Feature:SCTP)
-
       env_vars:
         - name: USE_HASH_RELEASE
           value: "true"
