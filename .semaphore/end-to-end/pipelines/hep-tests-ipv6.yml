@@ -1,0 +1,102 @@
+version: v1.0
+
+name: BPF
+# This file contains e2e runs for BPF.
+
+agent:
+  machine:
+    type: f1-standard-2
+    os_image: ubuntu2204
+
+execution_time_limit:
+  hours: 12
+
+global_job_config:
+  prologue:
+    commands_file: ../scripts/global_prologue.sh
+  epilogue:
+    always:
+      commands:
+        - ~/calico/.semaphore/end-to-end/scripts/global_epilogue.sh
+  secrets:
+    - name: marvin-github-ssh-private-key
+    - name: banzai-secrets
+  env_vars:
+    - name: K8S_E2E_FLAGS
+      value: --ginkgo.focus=should.correctly.implement.Host.Endpoint.NetworkPolicy --ginkgo.skip=(\[Slow\]|\[Disruptive\]|Feature:SCTP)
+    - name: DATAPLANE
+      value: "CalicoBPF"
+    - name: INSTALLER
+      value: "operator"
+    - name: FUNCTIONAL_AREA
+      value: "bpf.yml"
+    - name: USE_PRIVATE_REGISTRY
+      value: "true"
+    - name: PRIVATE_REGISTRY
+      value: "quay.io/"
+    - name: K8S_E2E_IMAGE
+      value: "gcr.io/tigera-dev/k8s-e2e@sha256:805cc9d28cff0a0cee4de84a5fe32072461646e4bd65a89a82a332203cd9f421"
+
+blocks:
+  # these are from the old bpf file
+  - name: BPF run matrix
+    dependencies: []
+    task:
+      jobs:
+        - name: Kops w/ calico CNI IPv6
+          execution_time_limit:
+            hours: 7
+          commands:
+            - ~/calico/.semaphore/end-to-end/scripts/body_standard.sh
+          matrix:
+            - env_var: DATAPLANE
+              values:
+                - CalicoBPF
+                - CalicoIptables
+            - env_var: IP_FAMILY
+              values:
+                - ipv6
+          env_vars:
+            - name: PROVISIONER
+              value: "aws-kops"
+            - name: INSTALLER
+              value: "operator"
+            # See https://tigera.atlassian.net/browse/CORE-6725 for the extra skips.
+            # Hopefully we'll fix the DataPath ones soon.
+            - name: K8S_VERSION
+              value: "stable-1"
+            - name: NAT_OUTGOING_V6
+              value: "Enabled"
+            - name: ENCAPSULATION_TYPE_V6
+              value: "VXLAN"
+            - name: BGP_STATUS
+              value: "Disabled"
+            - name: IPV6_POD_CIDR
+              value: "fd00:10:244::/64"
+            - name: IPV4_POD_CIDR
+              value: ""
+            - name: CNI_PLUGIN
+              value: "Calico"
+            - name: USE_VENDORED_CNI
+              value: "false"
+
+      env_vars:
+        - name: ENABLE_EXTERNAL_NODE
+          value: "true"
+        - name: K8S_E2E_DOCKER_EXTRA_FLAGS
+          value: --env EKS_CNI
+        - name: CLUSTER_NODES
+          value: "3"
+
+promotions:
+  - name: Cleanup jobs
+    pipeline_file: cleanup.yml
+    auto_promote:
+      when: "result = 'stopped'"
+
+after_pipeline:
+  task:
+    jobs:
+      - name: Reports
+        commands:
+          - test-results gen-pipeline-report --force
