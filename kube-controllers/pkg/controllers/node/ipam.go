@@ -1065,7 +1065,7 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 	return false
 }
 
-// isVMOrStandaloneVMIExists determines whether an IP allocation associated with a valid KubeVirt VirtualMachine or standalone KubeVirt VirtualMachineInstance.
+// isVMOrStandaloneVMIExists determines whether an IP allocation is associated with a valid KubeVirt VirtualMachine or standalone KubeVirt VirtualMachineInstance.
 func (c *IPAMController) isVMOrStandaloneVMIExists(a *allocation) bool {
 	ns := a.attrs[ipam.AttributeNamespace]
 	vmName := a.attrs[ipam.AttributeVMIName]
@@ -1125,7 +1125,7 @@ func (c *IPAMController) getVMByName(
 			return nil, nil
 		}
 
-		return nil, fmt.Errorf("Failed to query VM, vmName = %s, namespace = %s: %w", vmName, ns, err)
+		return nil, fmt.Errorf("failed to query VM, vmName = %s, namespace = %s: %w", vmName, ns, err)
 	}
 
 	return vm, nil

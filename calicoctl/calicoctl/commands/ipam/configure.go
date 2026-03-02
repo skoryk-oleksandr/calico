@@ -82,7 +82,7 @@ func parsePersistence(val string) (*ipamlib.VMAddressPersistence, error) {
 		p := ipamlib.VMAddressPersistenceDisabled
 		return &p, nil
 	default:
-		return nil, fmt.Errorf("invalid value for kubevirt-ip-persistence. Use Enabled or Disabled")
+		return nil, fmt.Errorf("invalid value for --kubevirt-ip-persistence. Use Enabled or Disabled")
 	}
 }
 

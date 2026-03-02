@@ -79,6 +79,10 @@ func TryCreateVirtClient(restConfig *rest.Config) (VirtClientInterface, error) {
 	}
 	// Check if KubeVirt API group is available before attempting to create the client
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restConfig)
+	if err != nil {
+		log.WithError(err).Debug("Failed to create discovery client for kubevirt detection")
+		return nil, err
+	}
 	isKubevirtInstalled, err := IsKubeVirtInstalled(discoveryClient)
 	if err != nil {
 		log.WithError(err).Debug("Failed to detect kubevirt installation")

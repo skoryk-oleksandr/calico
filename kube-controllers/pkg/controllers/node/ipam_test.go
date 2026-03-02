@@ -226,23 +226,6 @@ var _ = Describe("IPAM controller UTs", func() {
 		It("should treat allocation as invalid if VM not found and Grace Period is over", func() {
 			c.Start(stopChan)
 			namespace := "default"
-			vmName := "test-vm"
-			vmUID := "vm-uid"
-
-			runStrategy := kubevirtv1.RunStrategyAlways
-			now := metav1.Now()
-			vm := &kubevirtv1.VirtualMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:              vmName,
-					Namespace:         namespace,
-					UID:               types.UID(vmUID),
-					DeletionTimestamp: &now,
-				},
-				Spec: kubevirtv1.VirtualMachineSpec{
-					RunStrategy: &runStrategy,
-				},
-			}
-			virtClient.AddVM(vm)
 
 			allocation := makeVMIAllocation(namespace, "invalid-vm-name")
 			staleTime := time.Now().Add(-vmRecreationGracePeriod - time.Second)
@@ -268,23 +251,6 @@ var _ = Describe("IPAM controller UTs", func() {
 		It("should treat allocation as valid if VM not found by ns and name and within Grace Period", func() {
 			c.Start(stopChan)
 			namespace := "default"
-			vmName := "test-vm"
-			vmUID := "vm-uid"
-
-			runStrategy := kubevirtv1.RunStrategyAlways
-			now := metav1.Now()
-			vm := &kubevirtv1.VirtualMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:              vmName,
-					Namespace:         namespace,
-					UID:               types.UID(vmUID),
-					DeletionTimestamp: &now,
-				},
-				Spec: kubevirtv1.VirtualMachineSpec{
-					RunStrategy: &runStrategy,
-				},
-			}
-			virtClient.AddVM(vm)
 
 			allocation := makeVMIAllocation(namespace, "invalid-vm-name")
 			staleTime := time.Now().Add(-time.Second)
