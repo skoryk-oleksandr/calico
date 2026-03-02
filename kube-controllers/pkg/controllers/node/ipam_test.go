@@ -220,7 +220,7 @@ var _ = Describe("IPAM controller UTs", func() {
 			virtClient.AddVM(vm)
 
 			allocation := makeVMIAllocation(namespace, vmName)
-			Expect(c.isVmOrStandaloneVMIExists(allocation)).To(BeTrue())
+			Expect(c.isVMOrStandaloneVMIExists(allocation)).To(BeTrue())
 		})
 
 		It("should treat allocation as invalid if VM not found and Grace Period is over", func() {
@@ -245,9 +245,9 @@ var _ = Describe("IPAM controller UTs", func() {
 			virtClient.AddVM(vm)
 
 			allocation := makeVMIAllocation(namespace, "invalid-vm-name")
-			staleTime := time.Now().Add(-VM_RECREATION_GRACE_PERIOD - time.Second)
+			staleTime := time.Now().Add(-vmRecreationGracePeriod - time.Second)
 			allocation.leakedAt = &staleTime
-			Expect(c.isVmOrStandaloneVMIExists(allocation)).To(BeFalse())
+			Expect(c.isVMOrStandaloneVMIExists(allocation)).To(BeFalse())
 		})
 
 		It("should treat allocation as valid if VM not found but Standalone VMI exist", func() {
@@ -260,9 +260,9 @@ var _ = Describe("IPAM controller UTs", func() {
 			virtClient.AddVMI(vmi)
 
 			allocation := makeVMIAllocation(namespace, vmiName)
-			staleTime := time.Now().Add(-VM_RECREATION_GRACE_PERIOD - time.Second)
+			staleTime := time.Now().Add(-vmRecreationGracePeriod - time.Second)
 			allocation.leakedAt = &staleTime
-			Expect(c.isVmOrStandaloneVMIExists(allocation)).To(BeTrue())
+			Expect(c.isVMOrStandaloneVMIExists(allocation)).To(BeTrue())
 		})
 
 		It("should treat allocation as valid if VM not found by ns and name and within Grace Period", func() {
@@ -289,14 +289,14 @@ var _ = Describe("IPAM controller UTs", func() {
 			allocation := makeVMIAllocation(namespace, "invalid-vm-name")
 			staleTime := time.Now().Add(-time.Second)
 			allocation.leakedAt = &staleTime
-			Expect(c.isVmOrStandaloneVMIExists(allocation)).To(BeTrue())
+			Expect(c.isVMOrStandaloneVMIExists(allocation)).To(BeTrue())
 		})
 
 		It("should treat allocation as valid if namespace or vmName attributes are missing", func() {
 			c.Start(stopChan)
 
 			allocation := makeVMIAllocation("", "")
-			Expect(c.isVmOrStandaloneVMIExists(allocation)).To(BeTrue())
+			Expect(c.isVMOrStandaloneVMIExists(allocation)).To(BeTrue())
 		})
 	})
 

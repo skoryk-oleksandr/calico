@@ -336,7 +336,7 @@ func startCompactor(ctx context.Context, interval time.Duration) {
 }
 
 // getClients builds and returns Kubernetes and Calico clients.
-func getClients(kubeconfig string) (*kubernetes.Clientset, client.Interface, clientset.Interface, *kubevirt.VirtClientInterface, error) {
+func getClients(kubeconfig string) (*kubernetes.Clientset, client.Interface, clientset.Interface, kubevirt.VirtClientInterface, error) {
 	// Get Calico client
 	config, err := apiconfig.LoadClientConfigFromEnvironment()
 	if err != nil {
@@ -383,7 +383,7 @@ func getClients(kubeconfig string) (*kubernetes.Clientset, client.Interface, cli
 		return nil, nil, nil, nil, fmt.Errorf("failed to create kubevirt client: %w", err)
 	}
 
-	return k8sClientset, libcalicoClient, v3c, &kubevirtClient, nil
+	return k8sClientset, libcalicoClient, v3c, kubevirtClient, nil
 }
 
 // Returns an etcdv3 client based on the environment. The client will be configured to
@@ -470,7 +470,7 @@ func (cc *controllerControl) InitControllers(
 	calicoClient client.Interface,
 	v3c clientset.Interface,
 	dataFeed *utils.DataFeed,
-	kubevirtClient *kubevirt.VirtClientInterface,
+	kubevirtClient kubevirt.VirtClientInterface,
 ) {
 	// Create a shared informer factory to allow cache sharing between controllers monitoring the
 	// same resource.

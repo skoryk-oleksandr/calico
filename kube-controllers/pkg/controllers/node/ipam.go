@@ -51,9 +51,9 @@ import (
 )
 
 const (
-	// VM_RECREATION_GRACE_PERIOD is the time window to allow VM recreation.
+	// vmRecreationGracePeriod is the time window to allow VM recreation.
 	// During this period, if a VM doesn't exist we assume the VM is being recreated (e.g., restart, etc.)
-	VM_RECREATION_GRACE_PERIOD = 15 * time.Minute
+	vmRecreationGracePeriod = 15 * time.Minute
 )
 
 var (
@@ -969,7 +969,7 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 
 	// Handle VMI-based allocations
 	if a.isVMAllocation() {
-		return c.isVmOrStandaloneVMIExists(a)
+		return c.isVMOrStandaloneVMIExists(a)
 	}
 
 	if ns == "" || pod == "" {
@@ -1065,8 +1065,8 @@ func (c *IPAMController) allocationIsValid(a *allocation, preferCache bool) bool
 	return false
 }
 
-// isVmOrStandaloneVMIExists determines whether an IP allocation associated with a valid KubeVirt VirtualMachine or standalone KubeVirt VirtualMachineInstance.
-func (c *IPAMController) isVmOrStandaloneVMIExists(a *allocation) bool {
+// isVMOrStandaloneVMIExists determines whether an IP allocation associated with a valid KubeVirt VirtualMachine or standalone KubeVirt VirtualMachineInstance.
+func (c *IPAMController) isVMOrStandaloneVMIExists(a *allocation) bool {
 	ns := a.attrs[ipam.AttributeNamespace]
 	vmName := a.attrs[ipam.AttributeVMIName]
 	logc := log.WithFields(a.fields())
@@ -1078,7 +1078,7 @@ func (c *IPAMController) isVmOrStandaloneVMIExists(a *allocation) bool {
 		return true
 	}
 
-	vm, err := c.getVmByName(ns, vmName, logc)
+	vm, err := c.getVMByName(ns, vmName, logc)
 	if err != nil {
 		logc.WithError(err).Error("Failed to get VM resource. Assuming allocation is valid")
 		return true
@@ -1109,7 +1109,7 @@ func (c *IPAMController) isVmOrStandaloneVMIExists(a *allocation) bool {
 	return true
 }
 
-func (c *IPAMController) getVmByName(
+func (c *IPAMController) getVMByName(
 	ns, vmName string,
 	logc *log.Entry,
 ) (*kubevirtv1.VirtualMachine, error) {
@@ -1136,7 +1136,7 @@ func withinGracePeriod(a *allocation, logc *log.Entry) bool {
 		logc.Debug("VMI missing first time, starting grace period")
 		return true
 	}
-	if time.Since(*a.leakedAt) < VM_RECREATION_GRACE_PERIOD {
+	if time.Since(*a.leakedAt) < vmRecreationGracePeriod {
 		logc.Debug("Within VM recreation grace period")
 		return true
 	}
