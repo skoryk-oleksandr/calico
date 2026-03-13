@@ -965,6 +965,34 @@ Controls whether Felix enables support for IPv6 (if supported by the in-use data
 | `FelixConfiguration` schema | Boolean. |
 | Default value (YAML) | `true` |
 
+### `IstioAmbientMode` (config file) / `istioAmbientMode` (YAML)
+
+Configures Felix to work together with Tigera's Istio distribution.
+
+| Detail |   |
+| --- | --- |
+| Environment variable | `FELIX_IstioAmbientMode` |
+| Encoding (env var/config file) | One of: <code>Disabled</code>, <code>Enabled</code> (case insensitive) |
+| Default value (above encoding) | `Disabled` |
+| `FelixConfiguration` field | `istioAmbientMode` (YAML) `IstioAmbientMode` (Go API) |
+| `FelixConfiguration` schema | One of: <code>"Disabled"</code>, <code>"Enabled"</code>. |
+| Default value (YAML) | `Disabled` |
+
+### `IstioDSCPMark` (config file) / `istioDSCPMark` (YAML)
+
+Sets the value to use when directing traffic to Istio ZTunnel, when Istio is enabled. The mark is set only on
+SYN packets at the final hop to avoid interference with other protocols. This value is reserved by Calico and must not be used
+with other Istio installation.
+
+| Detail |   |
+| --- | --- |
+| Environment variable | `FELIX_IstioDSCPMark` |
+| Encoding (env var/config file) | Numeric value: An integer from 0 to 63, representing the 6-bit DSCP code directly; Named value: A case-insensitive string corresponding to a standardized DSCP name (e.g., "CS0", "AF11", "AF21", "EF", etc.) as defined in the IANA registry for Differentiated Services Field Codepoints. |
+| Default value (above encoding) | `23` |
+| `FelixConfiguration` field | `istioDSCPMark` (YAML) `IstioDSCPMark` (Go API) |
+| `FelixConfiguration` schema | String. |
+| Default value (YAML) | none |
+
 ### `MTUIfacePattern` (config file) / `mtuIfacePattern` (YAML)
 
 A regular expression that controls which interfaces Felix should scan in order
@@ -1032,11 +1060,11 @@ Configures nftables support in Felix.
 | Detail |   |
 | --- | --- |
 | Environment variable | `FELIX_NFTablesMode` |
-| Encoding (env var/config file) | One of: <code>Disabled</code>, <code>Enabled</code> (case insensitive) |
-| Default value (above encoding) | `Disabled` |
+| Encoding (env var/config file) | One of: <code>Auto</code>, <code>Disabled</code>, <code>Enabled</code> (case insensitive) |
+| Default value (above encoding) | `Auto` |
 | `FelixConfiguration` field | `nftablesMode` (YAML) `NFTablesMode` (Go API) |
-| `FelixConfiguration` schema | One of: <code>"Disabled"</code>, <code>"Enabled"</code>. |
-| Default value (YAML) | `Disabled` |
+| `FelixConfiguration` schema | One of: <code>"Auto"</code>, <code>"Disabled"</code>, <code>"Enabled"</code>. |
+| Default value (YAML) | `Auto` |
 
 ### `NetlinkTimeoutSecs` (config file) / `netlinkTimeout` (YAML)
 
@@ -1068,8 +1096,10 @@ like Application layer policy.
 
 ### `ProgramClusterRoutes` (config file) / `programClusterRoutes` (YAML)
 
-Specifies whether Felix should program IPIP routes instead of BIRD.
-Felix always programs VXLAN routes.
+Controls how a cluster node gets a route to a workload on another node,
+when that workload's IP comes from an IP Pool with vxlanMode: Never. When ProgramClusterRoutes is Disabled,
+it is expected that confd and BIRD will program that route. When ProgramClusterRoutes is Enabled, Felix program that route.
+Felix always programs such routes for IP Pools with vxlanMode: Always or vxlanMode: CrossSubnet.
 
 | Detail |   |
 | --- | --- |
@@ -1270,8 +1300,8 @@ should be cleaned up to avoid confusing interactions.
 | Encoding (env var/config file) | One of: <code>auto</code>, <code>legacy</code>, <code>nft</code> (case insensitive) |
 | Default value (above encoding) | `auto` |
 | `FelixConfiguration` field | `iptablesBackend` (YAML) `IptablesBackend` (Go API) |
-| `FelixConfiguration` schema | One of: <code>Auto</code>, <code>Legacy</code>, <code>NFT</code>. |
-| Default value (YAML) | `Auto` |
+| `FelixConfiguration` schema | One of: <code>"Auto"</code>, <code>"Legacy"</code>, <code>"NFT"</code>. |
+| Default value (YAML) | `auto` |
 
 ### `IptablesFilterAllowAction` (config file) / `iptablesFilterAllowAction` (YAML)
 
@@ -1849,6 +1879,7 @@ Felix will not modify the JIT hardening setting.
 
 In BPF mode, controls the port that Felix's embedded kube-proxy health check server binds to.
 The health check server is used by external load balancers to determine if this node should receive traffic.
+Set to 0 to disable the health check server.
 
 | Detail |   |
 | --- | --- |
@@ -1858,7 +1889,6 @@ The health check server is used by external load balancers to determine if this 
 | `FelixConfiguration` field | `bpfKubeProxyHealthzPort` (YAML) `BPFKubeProxyHealthzPort` (Go API) |
 | `FelixConfiguration` schema | Integer |
 | Default value (YAML) | `10256` |
-| Notes | Required. | 
 
 ### `BPFKubeProxyIptablesCleanupEnabled` (config file) / `bpfKubeProxyIptablesCleanupEnabled` (YAML)
 

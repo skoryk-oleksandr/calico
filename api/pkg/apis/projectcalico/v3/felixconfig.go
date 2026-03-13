@@ -21,11 +21,13 @@ import (
 
 // +genclient:nonNamespaced
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:shortName={felixconfig,felixconfigs}
 
 // FelixConfigurationList contains a list of FelixConfiguration object.
 type FelixConfigurationList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
+	metav1.ListMeta `json:"metadata" protobuf:"bytes,1,opt,name=metadata"`
 
 	Items []FelixConfiguration `json:"items" protobuf:"bytes,2,rep,name=items"`
 }
@@ -33,12 +35,13 @@ type FelixConfigurationList struct {
 // +genclient
 // +genclient:nonNamespaced
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:resource:scope=Cluster
 
 type FelixConfiguration struct {
 	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
+	metav1.ObjectMeta `json:"metadata" protobuf:"bytes,1,opt,name=metadata"`
 
-	Spec FelixConfigurationSpec `json:"spec,omitempty" protobuf:"bytes,2,opt,name=spec"`
+	Spec FelixConfigurationSpec `json:"spec" protobuf:"bytes,2,opt,name=spec"`
 }
 
 const (
@@ -46,6 +49,7 @@ const (
 	KindFelixConfigurationList = "FelixConfigurationList"
 )
 
+// +kubebuilder:validation:Enum=Legacy;NFT;Auto
 type IptablesBackend string
 
 const (
@@ -55,12 +59,14 @@ const (
 )
 
 // NFTablesMode is the enum used to enable/disable nftables mode.
-// +kubebuilder:validation:Enum=Disabled;Enabled
+// +enum
+// +kubebuilder:validation:Enum=Disabled;Enabled;Auto
 type NFTablesMode string
 
 const (
 	NFTablesModeEnabled  NFTablesMode = "Enabled"
 	NFTablesModeDisabled NFTablesMode = "Disabled"
+	NFTablesModeAuto     NFTablesMode = "Auto"
 )
 
 // +kubebuilder:validation:Enum=DoNothing;Enable;Disable
@@ -157,6 +163,7 @@ const (
 )
 
 // FelixConfigurationSpec contains the values of the Felix configuration.
+// +kubebuilder:validation:XValidation:rule="!has(self.routeTableRange) || !has(self.routeTableRanges)",message="routeTableRange and routeTableRanges cannot both be set",reason=FieldValueForbidden
 type FelixConfigurationSpec struct {
 	// UseInternalDataplaneDriver, if true, Felix will use its internal dataplane programming logic.  If false, it
 	// will launch an external dataplane driver and communicate with it over protobuf.
@@ -562,8 +569,10 @@ type FelixConfigurationSpec struct {
 	// use a distinct protocol (in addition to setting this field to false).
 	RemoveExternalRoutes *bool `json:"removeExternalRoutes,omitempty"`
 
-	// ProgramClusterRoutes specifies whether Felix should program IPIP routes instead of BIRD.
-	// Felix always programs VXLAN routes. [Default: Disabled]
+	// ProgramClusterRoutes controls how a cluster node gets a route to a workload on another node,
+	// when that workload's IP comes from an IP Pool with vxlanMode: Never. When ProgramClusterRoutes is Disabled,
+	// it is expected that confd and BIRD will program that route. When ProgramClusterRoutes is Enabled, Felix program that route.
+	// Felix always programs such routes for IP Pools with vxlanMode: Always or vxlanMode: CrossSubnet. [Default: Disabled]
 	// +kubebuilder:validation:Enum=Enabled;Disabled
 	ProgramClusterRoutes *string `json:"programClusterRoutes,omitempty"`
 
@@ -630,7 +639,8 @@ type FelixConfigurationSpec struct {
 	// iptables. [Default: false]
 	GenericXDPEnabled *bool `json:"genericXDPEnabled,omitempty" confignamev1:"GenericXDPEnabled"`
 
-	// NFTablesMode configures nftables support in Felix. [Default: Disabled]
+	// NFTablesMode configures nftables support in Felix. [Default: Auto]
+	// +kubebuilder:default=Auto
 	NFTablesMode *NFTablesMode `json:"nftablesMode,omitempty"`
 
 	// NftablesRefreshInterval controls the interval at which Felix periodically refreshes the nftables rules. [Default: 90s]
@@ -786,8 +796,9 @@ type FelixConfigurationSpec struct {
 	BPFKubeProxyMinSyncPeriod *metav1.Duration `json:"bpfKubeProxyMinSyncPeriod,omitempty" validate:"omitempty" configv1timescale:"seconds"`
 
 	// BPFKubeProxyHealthzPort, in BPF mode, controls the port that Felix's embedded kube-proxy health check server binds to.
-	// The health check server is used by external load balancers to determine if this node should receive traffic.  [Default: 10256]
-	BPFKubeProxyHealthzPort *int `json:"bpfKubeProxyHealthzPort,omitempty" validate:"omitempty,gte=1,lte=65535" confignamev1:"BPFKubeProxyHealthzPort"`
+	// The health check server is used by external load balancers to determine if this node should receive traffic.
+	// Set to 0 to disable the health check server.  [Default: 10256]
+	BPFKubeProxyHealthzPort *int `json:"bpfKubeProxyHealthzPort,omitempty" validate:"omitempty,gte=0,lte=65535" confignamev1:"BPFKubeProxyHealthzPort"`
 
 	// BPFPSNATPorts sets the range from which we randomly pick a port if there is a source port
 	// collision. This should be within the ephemeral range as defined by RFC 6056 (1024–65535) and
@@ -880,6 +891,17 @@ type FelixConfigurationSpec struct {
 	// BPFExportBufferSizeMB in BPF mode, controls the buffer size used for sending BPF events to felix.
 	// [Default: 1]
 	BPFExportBufferSizeMB *int `json:"bpfExportBufferSizeMB,omitempty" validate:"omitempty,cidrs"`
+
+	// IstioAmbientMode configures Felix to work together with Tigera's Istio distribution.
+	// [Default: Disabled]
+	// +optional
+	IstioAmbientMode *IstioAmbientMode `json:"istioAmbientMode,omitempty"`
+
+	// IstioDSCPMark sets the value to use when directing traffic to Istio ZTunnel, when Istio is enabled. The mark is set only on
+	// SYN packets at the final hop to avoid interference with other protocols. This value is reserved by Calico and must not be used
+	// with other Istio installation. [Default: 23]
+	// +optional
+	IstioDSCPMark *numorstring.DSCP `json:"istioDSCPMark,omitempty"`
 
 	// CgroupV2Path overrides the default location where to find the cgroup hierarchy.
 	CgroupV2Path string `json:"cgroupV2Path,omitempty"`
@@ -1159,6 +1181,15 @@ type BPFConntrackTimeouts struct {
 	// +optional
 	ICMPTimeout *BPFConntrackTimeout `json:"icmpTimeout,omitempty"`
 }
+
+// IstioAmbientMode is the enum used to enable/disable Tigera Istio mode.
+// +kubebuilder:validation:Enum=Enabled;Disabled
+type IstioAmbientMode string
+
+const (
+	IstioAmbientModeEnabled  IstioAmbientMode = "Enabled"
+	IstioAmbientModeDisabled IstioAmbientMode = "Disabled"
+)
 
 // New FelixConfiguration creates a new (zeroed) FelixConfiguration struct with the TypeMetadata
 // initialized to the current version.

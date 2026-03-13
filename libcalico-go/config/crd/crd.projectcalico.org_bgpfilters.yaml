@@ -30,12 +30,22 @@ spec:
                   items:
                     properties:
                       action:
+                        enum:
+                          - Accept
+                          - Reject
                         type: string
                       cidr:
+                        format: cidr
+                        maxLength: 18
                         type: string
                       interface:
                         type: string
                       matchOperator:
+                        enum:
+                          - Equal
+                          - NotEqual
+                          - In
+                          - NotIn
                         type: string
                       prefixLength:
                         properties:
@@ -50,22 +60,47 @@ spec:
                             minimum: 0
                             type: integer
                         type: object
+                        x-kubernetes-map-type: atomic
                       source:
+                        enum:
+                          - RemotePeers
                         type: string
                     required:
                       - action
                     type: object
+                    x-kubernetes-map-type: atomic
+                    x-kubernetes-validations:
+                      - message: cidr and matchOperator must both be set or both be empty
+                        reason: FieldValueInvalid
+                        rule:
+                          (has(self.cidr) && size(self.cidr) > 0) == (has(self.matchOperator)
+                          && size(self.matchOperator) > 0)
+                      - message: cidr is required when prefixLength is set
+                        reason: FieldValueInvalid
+                        rule:
+                          "!has(self.prefixLength) || (has(self.cidr) && size(self.cidr)
+                          > 0)"
                   type: array
                 exportV6:
                   items:
                     properties:
                       action:
+                        enum:
+                          - Accept
+                          - Reject
                         type: string
                       cidr:
+                        format: cidr
+                        maxLength: 43
                         type: string
                       interface:
                         type: string
                       matchOperator:
+                        enum:
+                          - Equal
+                          - NotEqual
+                          - In
+                          - NotIn
                         type: string
                       prefixLength:
                         properties:
@@ -80,22 +115,47 @@ spec:
                             minimum: 0
                             type: integer
                         type: object
+                        x-kubernetes-map-type: atomic
                       source:
+                        enum:
+                          - RemotePeers
                         type: string
                     required:
                       - action
                     type: object
+                    x-kubernetes-map-type: atomic
+                    x-kubernetes-validations:
+                      - message: cidr and matchOperator must both be set or both be empty
+                        reason: FieldValueInvalid
+                        rule:
+                          (has(self.cidr) && size(self.cidr) > 0) == (has(self.matchOperator)
+                          && size(self.matchOperator) > 0)
+                      - message: cidr is required when prefixLength is set
+                        reason: FieldValueInvalid
+                        rule:
+                          "!has(self.prefixLength) || (has(self.cidr) && size(self.cidr)
+                          > 0)"
                   type: array
                 importV4:
                   items:
                     properties:
                       action:
+                        enum:
+                          - Accept
+                          - Reject
                         type: string
                       cidr:
+                        format: cidr
+                        maxLength: 18
                         type: string
                       interface:
                         type: string
                       matchOperator:
+                        enum:
+                          - Equal
+                          - NotEqual
+                          - In
+                          - NotIn
                         type: string
                       prefixLength:
                         properties:
@@ -110,22 +170,47 @@ spec:
                             minimum: 0
                             type: integer
                         type: object
+                        x-kubernetes-map-type: atomic
                       source:
+                        enum:
+                          - RemotePeers
                         type: string
                     required:
                       - action
                     type: object
+                    x-kubernetes-map-type: atomic
+                    x-kubernetes-validations:
+                      - message: cidr and matchOperator must both be set or both be empty
+                        reason: FieldValueInvalid
+                        rule:
+                          (has(self.cidr) && size(self.cidr) > 0) == (has(self.matchOperator)
+                          && size(self.matchOperator) > 0)
+                      - message: cidr is required when prefixLength is set
+                        reason: FieldValueInvalid
+                        rule:
+                          "!has(self.prefixLength) || (has(self.cidr) && size(self.cidr)
+                          > 0)"
                   type: array
                 importV6:
                   items:
                     properties:
                       action:
+                        enum:
+                          - Accept
+                          - Reject
                         type: string
                       cidr:
+                        format: cidr
+                        maxLength: 43
                         type: string
                       interface:
                         type: string
                       matchOperator:
+                        enum:
+                          - Equal
+                          - NotEqual
+                          - In
+                          - NotIn
                         type: string
                       prefixLength:
                         properties:
@@ -140,11 +225,26 @@ spec:
                             minimum: 0
                             type: integer
                         type: object
+                        x-kubernetes-map-type: atomic
                       source:
+                        enum:
+                          - RemotePeers
                         type: string
                     required:
                       - action
                     type: object
+                    x-kubernetes-map-type: atomic
+                    x-kubernetes-validations:
+                      - message: cidr and matchOperator must both be set or both be empty
+                        reason: FieldValueInvalid
+                        rule:
+                          (has(self.cidr) && size(self.cidr) > 0) == (has(self.matchOperator)
+                          && size(self.matchOperator) > 0)
+                      - message: cidr is required when prefixLength is set
+                        reason: FieldValueInvalid
+                        rule:
+                          "!has(self.prefixLength) || (has(self.cidr) && size(self.cidr)
+                          > 0)"
                   type: array
               type: object
           type: object

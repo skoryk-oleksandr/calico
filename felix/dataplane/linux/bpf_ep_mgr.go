@@ -31,6 +31,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +50,7 @@ import (
 	k8sv1 "k8s.io/api/core/v1"
 
 	"github.com/projectcalico/calico/felix/bpf"
+	"github.com/projectcalico/calico/felix/bpf/allowsources"
 	bpfarp "github.com/projectcalico/calico/felix/bpf/arp"
 	"github.com/projectcalico/calico/felix/bpf/asm"
 	"github.com/projectcalico/calico/felix/bpf/bpfdefs"
@@ -235,6 +237,7 @@ type bpfInterfaceInfo struct {
 	endpointID    *types.WorkloadEndpointID
 	ifaceType     IfaceType
 	masterIfIndex int
+	hasIstioDSCP  bool
 }
 
 func (i bpfInterfaceInfo) ifaceIsUp() bool {
@@ -372,12 +375,13 @@ type bpfEndpointManager struct {
 	bpfAttachType          apiv3.BPFAttachOption
 	policyTrampolineStride atomic.Int32
 
-	routeTableV4     *routetable.ClassView
-	routeTableV6     *routetable.ClassView
-	services         map[serviceKey][]ip.CIDR
-	dirtyServices    set.Set[serviceKey]
-	natExcludedCIDRs *ip.CIDRTrie
-	profiling        string
+	routeTableV4       *routetable.ClassView
+	routeTableV6       *routetable.ClassView
+	services           map[serviceKey][]ip.CIDR
+	dirtyServices      set.Set[serviceKey]
+	natExcludedCIDRs   *ip.CIDRTrie
+	profiling          string
+	bpfUDPGSOLinearize bool
 
 	// Maps for policy rule counters
 	polNameToMatchIDs map[string]set.Set[polprog.RuleMatchID]
@@ -399,9 +403,12 @@ type bpfEndpointManager struct {
 
 	healthAggregator     *health.HealthAggregator
 	updateRateLimitedLog *logutilslc.RateLimitedLogger
+	istioDSCP            uint8
 
 	QoSMap        maps.MapWithUpdateWithFlags
 	maglevLUTSize int
+
+	workloadSourceSpoofing bool
 }
 
 type bpfEndpointManagerDataplane struct {
@@ -416,6 +423,9 @@ type bpfEndpointManagerDataplane struct {
 	tunnelIP            net.IP
 	iptablesFilterTable Table
 	ipSetIDAlloc        *idalloc.IDAllocator
+
+	allowedSourcesPerWorkload map[types.WorkloadEndpointID]set.Set[string]
+	workloadRemoveChan        chan string
 }
 
 type serviceKey struct {
@@ -450,6 +460,7 @@ func NewBPFEndpointManager(
 	healthAggregator *health.HealthAggregator,
 	dataplanefeatures *environment.Features,
 	bpfIfaceMTU int,
+	workloadRemoveChanV4, workloadRemoveChanV6 chan string,
 ) (*bpfEndpointManager, error) {
 	if livenessCallback == nil {
 		livenessCallback = func() {}
@@ -515,13 +526,15 @@ func NewBPFEndpointManager(
 
 		natOutgoingExclusions: config.RulesConfig.NATOutgoingExclusions,
 
-		healthAggregator: healthAggregator,
-		features:         dataplanefeatures,
-		profiling:        config.BPFProfiling,
-		bpfAttachType:    config.BPFAttachType,
+		healthAggregator:   healthAggregator,
+		features:           dataplanefeatures,
+		profiling:          config.BPFProfiling,
+		bpfUDPGSOLinearize: !dataplanefeatures.KernelHasUDPGSOFix,
+		bpfAttachType:      config.BPFAttachType,
 
-		QoSMap:        bpfmaps.CommonMaps.QoSMap,
-		maglevLUTSize: config.BPFMaglevLUTSize,
+		QoSMap:                 bpfmaps.CommonMaps.QoSMap,
+		maglevLUTSize:          config.BPFMaglevLUTSize,
+		workloadSourceSpoofing: config.WorkloadSourceSpoofing,
 	}
 
 	m.policyTrampolineStride.Store(int32(asm.TrampolineStrideDefault))
@@ -600,10 +613,10 @@ func NewBPFEndpointManager(
 			m.bpfAttachType = apiv3.BPFAttachOptionTC
 		}
 	}
-	m.v4 = newBPFEndpointManagerDataplane(proto.IPVersion_IPV4, bpfmaps.V4, iptablesFilterTableV4, ipSetIDAllocV4, m)
+	m.v4 = newBPFEndpointManagerDataplane(proto.IPVersion_IPV4, bpfmaps.V4, iptablesFilterTableV4, ipSetIDAllocV4, workloadRemoveChanV4, m)
 
 	if m.ipv6Enabled {
-		m.v6 = newBPFEndpointManagerDataplane(proto.IPVersion_IPV6, bpfmaps.V6, iptablesFilterTableV6, ipSetIDAllocV6, m)
+		m.v6 = newBPFEndpointManagerDataplane(proto.IPVersion_IPV6, bpfmaps.V6, iptablesFilterTableV6, ipSetIDAllocV6, workloadRemoveChanV6, m)
 	}
 
 	if m.hostNetworkedNATMode != hostNetworkedNATDisabled {
@@ -688,6 +701,10 @@ func NewBPFEndpointManager(
 		}
 	}
 
+	if config.RulesConfig.IstioAmbientModeEnabled {
+		m.istioDSCP = config.RulesConfig.IstioDSCPMark
+	}
+
 	return m, nil
 }
 
@@ -696,15 +713,18 @@ func newBPFEndpointManagerDataplane(
 	ipMaps *bpfmap.IPMaps,
 	iptablesFilterTable Table,
 	ipSetIDAlloc *idalloc.IDAllocator,
+	workloadRemoveChan chan string,
 	epMgr *bpfEndpointManager,
 ) *bpfEndpointManagerDataplane {
 	return &bpfEndpointManagerDataplane{
-		ipFamily:            ipFamily,
-		ifaceToIpMap:        map[string]net.IP{},
-		mgr:                 epMgr,
-		IPMaps:              ipMaps,
-		iptablesFilterTable: iptablesFilterTable,
-		ipSetIDAlloc:        ipSetIDAlloc,
+		ipFamily:                  ipFamily,
+		ifaceToIpMap:              map[string]net.IP{},
+		mgr:                       epMgr,
+		IPMaps:                    ipMaps,
+		iptablesFilterTable:       iptablesFilterTable,
+		ipSetIDAlloc:              ipSetIDAlloc,
+		allowedSourcesPerWorkload: map[types.WorkloadEndpointID]set.Set[string]{},
+		workloadRemoveChan:        workloadRemoveChan,
 	}
 }
 
@@ -830,7 +850,7 @@ func (m *bpfEndpointManager) updateHostIP(ipAddr string, ipFamily int) {
 	}
 }
 
-func (m *bpfEndpointManager) OnUpdate(msg interface{}) {
+func (m *bpfEndpointManager) OnUpdate(msg any) {
 	switch msg := msg.(type) {
 	// Updates from the dataplane:
 
@@ -1277,8 +1297,11 @@ func (m *bpfEndpointManager) onWorkloadEndpointUpdate(msg *proto.WorkloadEndpoin
 	m.addWEPToIndexes(wlID, wl)
 	m.withIface(wl.Name, func(iface *bpfInterface) bool {
 		iface.info.endpointID = &wlID
+		iface.info.hasIstioDSCP = wl.IsIstioAmbient
 		return true // Force interface to be marked dirty in case policies changed.
 	})
+
+	m.updateAllowSourceSets(wlID, wl)
 }
 
 // onWorkloadEndpointRemove removes the workload from the cache and the index, which maps from policy to workload.
@@ -1300,6 +1323,20 @@ func (m *bpfEndpointManager) onWorkloadEndpointRemove(msg *proto.WorkloadEndpoin
 	})
 	// Remove policy debug info if any
 	m.removeIfaceAllPolicyDebugInfo(oldWEP.Name)
+	m.cleanAllowSourceSetPerWorkload(wlID, oldWEP)
+
+	if m.v4 != nil && m.v4.workloadRemoveChan != nil {
+		for _, addr := range oldWEP.GetIpv4Nets() {
+			addr = strings.SplitN(addr, "/", 2)[0]
+			m.v4.workloadRemoveChan <- addr
+		}
+	}
+	if m.v6 != nil && m.v6.workloadRemoveChan != nil {
+		for _, addr := range oldWEP.GetIpv6Nets() {
+			addr = strings.SplitN(addr, "/", 2)[0]
+			m.v6.workloadRemoveChan <- addr
+		}
+	}
 }
 
 // onPolicyUpdate stores the policy in the cache and marks any endpoints using it dirty.
@@ -1405,7 +1442,7 @@ func (m *bpfEndpointManager) markExistingWEPDirty(wlID types.WorkloadEndpointID,
 }
 
 func jumpMapDeleteSubProgs(m maps.Map, idx, stride int) error {
-	for subProg := 0; subProg < jump.MaxSubPrograms; subProg++ {
+	for subProg := range jump.MaxSubPrograms {
 		if err := m.Delete(jump.Key(polprog.SubProgramJumpIdx(idx, subProg, stride))); err != nil {
 			if maps.IsNotExists(err) {
 				if subProg == 0 {
@@ -1830,12 +1867,10 @@ func (m *bpfEndpointManager) doApplyPolicyToDataIface(iface, masterIface string,
 	}
 
 	if m.v6 != nil {
-		parallelWG.Add(1)
-		go func() {
-			defer parallelWG.Done()
+		parallelWG.Go(func() {
 			ingressAP6, egressAP6, xdpAP6, err6 = m.v6.applyPolicyToDataIface(iface, hepPtr, &state,
 				tcAttachPoint, xdpAttachPoint, xdpMode)
-		}()
+		})
 	}
 	if m.v4 != nil {
 		ingressAP4, egressAP4, xdpAP4, err4 = m.v4.applyPolicyToDataIface(iface, hepPtr, &state,
@@ -1845,20 +1880,16 @@ func (m *bpfEndpointManager) doApplyPolicyToDataIface(iface, masterIface string,
 	parallelWG.Wait()
 
 	// Attach ingress program.
-	parallelWG.Add(1)
-	go func() {
-		defer parallelWG.Done()
+	parallelWG.Go(func() {
 		ingressAP := mergeAttachPoints(ingressAP4, ingressAP6)
 		if ingressAP != nil {
 			m.loadFilterProgram(ingressAP)
 			ingressErr = m.dp.ensureProgramAttached(ingressAP)
 		}
-	}()
+	})
 
 	// Attach xdp program.
-	parallelWG.Add(1)
-	go func() {
-		defer parallelWG.Done()
+	parallelWG.Go(func() {
 		xdpAP := mergeAttachPoints(xdpAP4, xdpAP6)
 		if xdpAP != nil {
 			if hepPtr != nil && len(hepPtr.UntrackedTiers) == 1 {
@@ -1867,7 +1898,7 @@ func (m *bpfEndpointManager) doApplyPolicyToDataIface(iface, masterIface string,
 				xdpErr = m.dp.ensureNoProgram(xdpAP)
 			}
 		}
-	}()
+	})
 
 	// Attach egress program.
 	egressAP := mergeAttachPoints(egressAP4, egressAP6)
@@ -2278,10 +2309,11 @@ func (m *bpfEndpointManager) doApplyPolicy(ifaceName string) (bpfInterfaceState,
 	startTime := time.Now()
 
 	var (
-		state      bpfInterfaceState
-		endpointID *types.WorkloadEndpointID
-		ifaceUp    bool
-		ifindex    int
+		state        bpfInterfaceState
+		endpointID   *types.WorkloadEndpointID
+		ifaceUp      bool
+		ifindex      int
+		hasIstioDSCP bool
 	)
 
 	// Other threads might be filling in jump map FDs in the map so take the lock.
@@ -2291,6 +2323,7 @@ func (m *bpfEndpointManager) doApplyPolicy(ifaceName string) (bpfInterfaceState,
 		ifindex = iface.info.ifIndex
 		endpointID = iface.info.endpointID
 		state = iface.dpState
+		hasIstioDSCP = iface.info.hasIstioDSCP
 		return false
 	})
 	m.ifacesLock.Unlock()
@@ -2464,16 +2497,19 @@ func (m *bpfEndpointManager) doApplyPolicy(ifaceName string) (bpfInterfaceState,
 		}
 	}
 
+	ap.IstioDSCP = -1
+	if hasIstioDSCP {
+		ap.IstioDSCP = int8(m.istioDSCP)
+	}
+
 	if err := m.wepStateFillJumps(ap, &state); err != nil {
 		return state, err
 	}
 
 	if m.v6 != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			ingressAP6, egressAP6, err6 = m.v6.applyPolicyToWeps(v6Readiness, ifaceName, &state, wep, ap)
-		}()
+		})
 	}
 
 	if m.v4 != nil {
@@ -2492,15 +2528,13 @@ func (m *bpfEndpointManager) doApplyPolicy(ifaceName string) (bpfInterfaceState,
 
 	// Attach preamble TC program
 	if attachPreamble {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			ingressAP := mergeAttachPoints(ingressAP4, ingressAP6)
 			if ingressAP != nil {
 				m.loadFilterProgram(ingressAP)
 				ingressErr = m.dp.ensureProgramAttached(ingressAP)
 			}
-		}()
+		})
 		egressAP := mergeAttachPoints(egressAP4, egressAP6)
 		if egressAP != nil {
 			m.loadFilterProgram(egressAP)
@@ -2774,12 +2808,10 @@ func (d *bpfEndpointManagerDataplane) applyPolicyToWeps(
 	var ingressAP *tc.AttachPoint
 	var ingressErr error
 
-	parallelWG.Add(1)
-	go func() {
-		defer parallelWG.Done()
+	parallelWG.Go(func() {
 		ingressAP, ingressErr = d.wepApplyPolicyToDirection(readiness,
 			state, endpoint, PolDirnIngress, &ingressAttachPoint)
-	}()
+	})
 
 	egressAP, egressErr := d.wepApplyPolicyToDirection(readiness,
 		state, endpoint, PolDirnEgress, &egressAttachPoint)
@@ -2806,19 +2838,15 @@ func (d *bpfEndpointManagerDataplane) applyPolicyToDataIface(
 	var ingressErr, egressErr, xdpErr error
 
 	if xdpMode != XDPModeNone {
-		parallelWG.Add(1)
-		go func() {
-			defer parallelWG.Done()
+		parallelWG.Go(func() {
 			xdpAP, xdpErr = d.attachXDPProgram(&xdpAttachPoint, ep, state)
-		}()
+		})
 	}
 
 	if xdpMode != XDPModeOnly {
-		parallelWG.Add(1)
-		go func() {
-			defer parallelWG.Done()
+		parallelWG.Go(func() {
 			ingressAP, ingressErr = d.attachDataIfaceProgram(ifaceName, ep, PolDirnIngress, state, &ingressAttachPoint)
-		}()
+		})
 
 		egressAP, egressErr = d.attachDataIfaceProgram(ifaceName, ep, PolDirnEgress, state, &egressAttachPoint)
 	}
@@ -3065,9 +3093,11 @@ func (m *bpfEndpointManager) calculateTCAttachPoint(ifaceName string) *tc.Attach
 	ap.PSNATEnd = m.psnatPorts.MaxPort
 	ap.TunnelMTU = uint16(m.vxlanMTU)
 	ap.Profiling = m.profiling
+	ap.UDPGSOLinearize = m.bpfUDPGSOLinearize
 	ap.OverlayTunnelID = m.overlayTunnelID
 	ap.AttachType = m.bpfAttachType
 	ap.RedirectPeer = true
+	ap.WorkloadSrcSpoofingConfigured = m.workloadSourceSpoofing
 	if m.bpfRedirectToPeer == "Disabled" {
 		ap.RedirectPeer = false
 	} else if (ap.Type == tcdefs.EpTypeIPIP || ap.Type == tcdefs.EpTypeL3Device) && m.bpfRedirectToPeer == "L2Only" {
@@ -3296,7 +3326,7 @@ func (m *bpfEndpointManager) addWEPToIndexes(wlID types.WorkloadEndpointID, wl *
 	m.addProfileToEPMappings(wl.ProfileIds, wlID)
 }
 
-func (m *bpfEndpointManager) addPolicyToEPMappings(tier string, policies []*proto.PolicyID, id interface{}) {
+func (m *bpfEndpointManager) addPolicyToEPMappings(tier string, policies []*proto.PolicyID, id any) {
 	for _, p := range policies {
 		polID := types.ProtoToPolicyID(p)
 		if m.policiesToWorkloads[polID] == nil {
@@ -3306,7 +3336,7 @@ func (m *bpfEndpointManager) addPolicyToEPMappings(tier string, policies []*prot
 	}
 }
 
-func (m *bpfEndpointManager) addProfileToEPMappings(profileIds []string, id interface{}) {
+func (m *bpfEndpointManager) addProfileToEPMappings(profileIds []string, id any) {
 	for _, profName := range profileIds {
 		profID := types.ProfileID{Name: profName}
 		profSet := m.profilesToWorkloads[profID]
@@ -3336,7 +3366,7 @@ func (m *bpfEndpointManager) removeWEPFromIndexes(wlID types.WorkloadEndpointID,
 	})
 }
 
-func (m *bpfEndpointManager) removePolicyToEPMappings(tier string, policies []*proto.PolicyID, id interface{}) {
+func (m *bpfEndpointManager) removePolicyToEPMappings(tier string, policies []*proto.PolicyID, id any) {
 	for _, pol := range policies {
 		polID := types.ProtoToPolicyID(pol)
 		polSet := m.policiesToWorkloads[polID]
@@ -3726,13 +3756,17 @@ func (m *bpfEndpointManager) ensureBPFDevices() error {
 	if m.v4 != nil {
 		m.routeTableV4.RouteUpdate(dataplanedefs.BPFInDev, routetable.Target{
 			Type: routetable.TargetTypeLinkLocalUnicast,
-			CIDR: bpfnatGWCIDR,
+			RouteKey: routetable.RouteKey{
+				CIDR: bpfnatGWCIDR,
+			},
 		})
 	}
 	if m.v6 != nil {
 		m.routeTableV6.RouteUpdate(dataplanedefs.BPFInDev, routetable.Target{
 			Type: routetable.TargetTypeLinkLocalUnicast,
-			CIDR: bpfnatGWCIDRv6,
+			RouteKey: routetable.RouteKey{
+				CIDR: bpfnatGWCIDRv6,
+			},
 		})
 	}
 
@@ -4145,6 +4179,7 @@ func (m *bpfEndpointManager) doUpdatePolicyProgram(
 	if hk == hook.XDP {
 		polProgsMap = m.commonMaps.XDPJumpMap
 		stride = jump.XDPMaxEntryPoints
+		attachType = libbpf.AttachTypeXDP
 	}
 	opts = append(opts, polprog.WithPolicyMapIndexAndStride(polJumpMapIdx, stride))
 
@@ -4407,13 +4442,7 @@ func (m *bpfEndpointManager) onServiceUpdate(update *proto.ServiceUpdate) {
 
 	// Check which IPs have been removed (no-op if we haven't seen it yet)
 	for _, old := range m.services[key] {
-		exists := false
-		for _, svcIP := range ips {
-			if old == svcIP {
-				exists = true
-				break
-			}
-		}
+		exists := slices.Contains(ips, old)
 		if !exists {
 			m.dp.delRoute(old)
 		}
@@ -4454,7 +4483,9 @@ var (
 func (m *bpfEndpointManager) setRoute(cidr ip.CIDR) {
 	target := routetable.Target{
 		Type: routetable.TargetTypeGlobalUnicast,
-		CIDR: cidr,
+		RouteKey: routetable.RouteKey{
+			CIDR: cidr,
+		},
 	}
 
 	if cidr.Version() == 6 {
@@ -4476,10 +4507,10 @@ func (m *bpfEndpointManager) setRoute(cidr ip.CIDR) {
 
 func (m *bpfEndpointManager) delRoute(cidr ip.CIDR) {
 	if m.v6 != nil && cidr.Version() == 6 {
-		m.routeTableV6.RouteRemove(dataplanedefs.BPFInDev, cidr)
+		m.routeTableV6.RouteRemove(dataplanedefs.BPFInDev, routetable.RouteKey{CIDR: cidr})
 	}
 	if m.v4 != nil && cidr.Version() == 4 {
-		m.routeTableV4.RouteRemove(dataplanedefs.BPFInDev, cidr)
+		m.routeTableV4.RouteRemove(dataplanedefs.BPFInDev, routetable.RouteKey{CIDR: cidr})
 	}
 	logrus.WithFields(logrus.Fields{
 		"cidr": cidr,
@@ -4604,6 +4635,201 @@ func (m *bpfEndpointManager) getIfaceTypeFromLink(link netlink.Link) IfaceType {
 		}
 	}
 	return IfaceTypeData
+}
+
+func (m *bpfEndpointManager) updateAllowSourceSets(wlID types.WorkloadEndpointID, wl *proto.WorkloadEndpoint) {
+	var oldPrefixes set.Set[string]
+	oldPrefixes, exists := m.getAllowedSourcesPerWorkload(wlID)
+	if !exists {
+		logrus.WithField("wep", wl).Debug("no existing annotations found for this workload")
+		oldPrefixes = set.New[string]()
+	}
+
+	for _, newPrefix := range wl.AllowSpoofedSourcePrefixes {
+		if !oldPrefixes.Contains(newPrefix) {
+			// add new annotation to bookkeeping map AND eBPF map
+			m.addAllowSourcePrefix(wlID, wl, newPrefix)
+		}
+	}
+
+	for existingPrefix := range oldPrefixes.All() {
+		if !slices.Contains(wl.AllowSpoofedSourcePrefixes, existingPrefix) {
+			// remove stale annotations from bookkeeping map AND eBPF map
+			m.removeAllowSourceSets(wlID, wl, existingPrefix)
+		}
+	}
+}
+
+func (m *bpfEndpointManager) addAllowSourcePrefix(wlID types.WorkloadEndpointID, wl *proto.WorkloadEndpoint, prefix string) {
+	bpfInterface, exists := m.nameToIface[wl.Name]
+	if !exists {
+		logrus.WithField("iface", wl.Name).Warn("Interface for workload endpoint not found, cannot add allowed source CIDRs")
+		return
+	}
+
+	ifindex := bpfInterface.info.ifIndex
+	if ifindex <= 0 {
+		return // if not an actual interface, don't add it to the map
+	}
+
+	mapAddError := m.changeAllowedSource(prefix, ifindex, true)
+	if mapAddError != nil {
+		logrus.WithField("wep", wlID).WithField("cidr", prefix).WithError(mapAddError).Error("Failed to add allowed source CIDR")
+		return
+	}
+	m.setAllowedSourcesPerWorkload(wlID, prefix)
+	logrus.WithField("wep", wlID).WithField("cidr", prefix).Debug("Successfully added allowed source CIDR")
+}
+
+func (m *bpfEndpointManager) cleanAllowSourceSetPerWorkload(wlID types.WorkloadEndpointID, wl *proto.WorkloadEndpoint) {
+	wlPrefixes, exists := m.getAllowedSourcesPerWorkload(wlID)
+	if !exists {
+		return
+	}
+	for wlPrefix := range wlPrefixes.All() {
+		m.removeAllowSourceSets(wlID, wl, wlPrefix)
+	}
+}
+
+func (m *bpfEndpointManager) removeAllowSourceSets(wlID types.WorkloadEndpointID, wl *proto.WorkloadEndpoint, prefix string) {
+	bpfInterface, exists := m.nameToIface[wl.Name]
+	if !exists {
+		logrus.WithField("wep", wlID).WithField("iface", wl.Name).Warn("Interface for workload endpoint not found, cannot remove allowed source CIDRs")
+		return
+	}
+
+	ifindex := bpfInterface.info.ifIndex
+	if ifindex <= 0 {
+		return // if not an actual interface, don't add it to the map
+	}
+
+	mapDelError := m.changeAllowedSource(prefix, ifindex, false)
+	if mapDelError != nil {
+		logrus.WithField("wep", wlID).WithField("cidr", prefix).WithError(mapDelError).Warn("Failed to remove allowed source CIDR")
+		return
+	}
+	m.discardFromAllowedSourcesPerWorkload(wlID, prefix)
+	logrus.WithField("wep", wlID).WithField("cidr", prefix).Debug("Successfully removed allowed source CIDR")
+}
+
+func (m *bpfEndpointManager) changeAllowedSource(prefix string, ifindex int, isAdd bool) error {
+	var managerDataplane *bpfEndpointManagerDataplane
+	var entry allowsources.AllowSourcesEntryInterface
+	var err error
+
+	cidr, err := ip.CIDRFromString(prefix)
+	if err != nil {
+		return err
+	}
+
+	if cidr.Version() == 4 {
+		if m.v4 == nil {
+			return fmt.Errorf("ipv4 dataplane not initialized")
+		}
+		entry = allowsources.NewKey(cidr, ifindex)
+		managerDataplane = m.v4
+	} else if cidr.Version() == 6 {
+		if m.v6 == nil {
+			return fmt.Errorf("ipv6 dataplane not initialized")
+		}
+		entry = allowsources.NewKeyV6(cidr, ifindex)
+		managerDataplane = m.v6
+	}
+
+	if isAdd {
+		err = managerDataplane.AllowSourcesMap.Update(entry.AsBytes(), allowsources.DummyValue)
+	} else {
+		err = managerDataplane.AllowSourcesMap.Delete(entry.AsBytes())
+	}
+	return err
+}
+
+func (m *bpfEndpointManager) getAllowedSourcesPerWorkload(wlID types.WorkloadEndpointID) (set.Set[string], bool) {
+	if m.ipv6Enabled && m.v4 != nil {
+		// dual-stack
+		allAllowedSources := set.New[string]()
+		v4Sources, v4Exists := m.v4.allowedSourcesPerWorkload[wlID]
+		v6Sources, v6Exists := m.v6.allowedSourcesPerWorkload[wlID]
+
+		if v4Exists {
+			allAllowedSources.AddSet(v4Sources)
+		}
+
+		if v6Exists {
+			allAllowedSources.AddSet(v6Sources)
+		}
+		return allAllowedSources, (v4Exists || v6Exists)
+	} else if m.ipv6Enabled {
+		// only ipv6
+		v6Sources, exists := m.v6.allowedSourcesPerWorkload[wlID]
+		return v6Sources, exists
+	} else {
+		// only ipv4
+		v4Sources, exists := m.v4.allowedSourcesPerWorkload[wlID]
+		return v4Sources, exists
+	}
+}
+
+func (m *bpfEndpointManager) setAllowedSourcesPerWorkload(wlID types.WorkloadEndpointID, prefix string) {
+	cidr, err := ip.CIDRFromString(prefix)
+	if err != nil {
+		logrus.WithField("wep", wlID).WithField("cidr", prefix).WithError(err).Warn("Failed to parse CIDR")
+		return
+	}
+
+	if m.ipv6Enabled && m.v4 != nil {
+		// dual-stack
+		if cidr.Version() == 4 {
+			_, exists := m.v4.allowedSourcesPerWorkload[wlID]
+			if !exists {
+				m.v4.allowedSourcesPerWorkload[wlID] = set.New[string]()
+			}
+			m.v4.allowedSourcesPerWorkload[wlID].Add(prefix)
+		} else if cidr.Version() == 6 {
+			_, exists := m.v6.allowedSourcesPerWorkload[wlID]
+			if !exists {
+				m.v6.allowedSourcesPerWorkload[wlID] = set.New[string]()
+			}
+			m.v6.allowedSourcesPerWorkload[wlID].Add(prefix)
+		}
+	} else if m.ipv6Enabled {
+		// only ipv6
+		_, exists := m.v6.allowedSourcesPerWorkload[wlID]
+		if !exists {
+			m.v6.allowedSourcesPerWorkload[wlID] = set.New[string]()
+		}
+		m.v6.allowedSourcesPerWorkload[wlID].Add(prefix)
+	} else {
+		// only ipv4
+		_, exists := m.v4.allowedSourcesPerWorkload[wlID]
+		if !exists {
+			m.v4.allowedSourcesPerWorkload[wlID] = set.New[string]()
+		}
+		m.v4.allowedSourcesPerWorkload[wlID].Add(prefix)
+	}
+}
+
+func (m *bpfEndpointManager) discardFromAllowedSourcesPerWorkload(wlID types.WorkloadEndpointID, prefix string) {
+	cidr, err := ip.CIDRFromString(prefix)
+	if err != nil {
+		logrus.WithField("wep", wlID).WithField("cidr", prefix).WithError(err).Warn("Failed to parse CIDR")
+		return
+	}
+
+	if m.ipv6Enabled && m.v4 != nil {
+		// dual-stack
+		if cidr.Version() == 4 {
+			m.v4.allowedSourcesPerWorkload[wlID].Discard(prefix)
+		} else if cidr.Version() == 6 {
+			m.v6.allowedSourcesPerWorkload[wlID].Discard(prefix)
+		}
+	} else if m.ipv6Enabled {
+		// only ipv6
+		m.v6.allowedSourcesPerWorkload[wlID].Discard(prefix)
+	} else {
+		// only ipv4
+		m.v4.allowedSourcesPerWorkload[wlID].Discard(prefix)
+	}
 }
 
 func (trees bpfIfaceTrees) getPhyDevices(masterIfName string) []string {
@@ -4866,7 +5092,7 @@ func newJumpMapAlloc(name string, entryPoints int) *jumpMapAlloc {
 		freeStack: make([]int, entryPoints),
 		inUse:     map[int]string{},
 	}
-	for i := 0; i < entryPoints; i++ {
+	for i := range entryPoints {
 		a.free.Add(i)
 		a.freeStack[entryPoints-1-i] = i
 	}

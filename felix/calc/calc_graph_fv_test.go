@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2025 Tigera, Inc. All rights reserved.
+// Copyright (c) 2016-2026 Tigera, Inc. All rights reserved.
 
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	log "github.com/sirupsen/logrus"
 	googleproto "google.golang.org/protobuf/proto"
@@ -150,6 +150,14 @@ var baseTests = []StateList{
 	{
 		localEp1WithPolicy,
 		localEp1WithPolicyAndTier,
+	},
+
+	// Test movement of a policy between two non-default tiers via UPDATE.
+	// Both tiers exist throughout; only the policy's Tier field changes.
+	{
+		localEp1WithTwoTiersPolicyInTier1,
+		localEp1WithTwoTiersPolicyInTier2,
+		localEp1WithTwoTiersPolicyInTier1,
 	},
 
 	// Host endpoint tests.
@@ -605,6 +613,12 @@ var baseTests = []StateList{
 		wireguardV6,
 		wireguardV4V6,
 	},
+	// Istio tests - verify that the all-istio-weps IPSet is populated correctly
+	{
+		istioWithAmbientPod,
+		istioWithMixedPods,
+		istioSelectorEdgeCases,
+	},
 }
 
 var logOnce sync.Once
@@ -696,12 +710,13 @@ var _ = Describe("Async calculation graph state sequencing tests:", func() {
 					conf := config.New()
 					conf.FelixHostname = localHostname
 					conf.BPFEnabled = true
+					conf.IstioAmbientMode = "Enabled"
 					conf.SetUseNodeResourceUpdates(test.UsesNodeResources())
 					conf.RouteSource = test.RouteSource()
-					outputChan := make(chan interface{})
+					outputChan := make(chan any)
 					conf.Encapsulation = config.Encapsulation{VXLANEnabled: true, VXLANEnabledV6: true}
 					lookupsCache := NewLookupsCache()
-					asyncGraph := NewAsyncCalcGraph(conf, []chan<- interface{}{outputChan}, nil, lookupsCache)
+					asyncGraph := NewAsyncCalcGraph(conf, []chan<- any{outputChan}, nil, lookupsCache)
 					// And a validation filter, with a channel between it
 					// and the async graph.
 					validator := NewValidationFilter(asyncGraph, conf)
@@ -854,6 +869,7 @@ func doStateSequenceTest(expandedTest StateList, flushStrategy flushStrategy) {
 		conf := config.New()
 		conf.FelixHostname = localHostname
 		conf.BPFEnabled = true
+		conf.IstioAmbientMode = "Enabled"
 		conf.SetUseNodeResourceUpdates(expandedTest.UsesNodeResources())
 		conf.RouteSource = expandedTest.RouteSource()
 		mockDataplane = mock.NewMockDataplane()
@@ -954,11 +970,11 @@ var _ = Describe("calc graph with health state", func() {
 		// Create the calculation graph.
 		conf := config.New()
 		conf.FelixHostname = localHostname
-		outputChan := make(chan interface{})
+		outputChan := make(chan any)
 		healthAggregator := health.NewHealthAggregator()
 		lookupsCache := NewLookupsCache()
 		conf.Encapsulation = config.Encapsulation{VXLANEnabled: true, VXLANEnabledV6: true}
-		asyncGraph := NewAsyncCalcGraph(conf, []chan<- interface{}{outputChan}, healthAggregator, lookupsCache)
+		asyncGraph := NewAsyncCalcGraph(conf, []chan<- any{outputChan}, healthAggregator, lookupsCache)
 		Expect(asyncGraph).NotTo(BeNil())
 	})
 })

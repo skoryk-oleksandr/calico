@@ -41,6 +41,7 @@ var _ = describe.CalicoDescribe(
 	describe.WithTeam(describe.Core),
 	describe.WithFeature("NetworkPolicy"),
 	describe.WithCategory(describe.Policy),
+	describe.WithWindows(),
 	"Calico NetworkPolicy",
 	func() {
 		// Define variables common across all tests.
@@ -59,9 +60,6 @@ var _ = describe.CalicoDescribe(
 
 			cli, err = client.New(f.ClientConfig())
 			Expect(err).NotTo(HaveOccurred())
-
-			// Ensure a clean starting environment before each test.
-			Expect(utils.CleanDatastore(cli)).ShouldNot(HaveOccurred())
 		})
 
 		// Before each test, perform the following steps:
@@ -93,11 +91,11 @@ var _ = describe.CalicoDescribe(
 		// - Creating a default-deny policy applied to both namespaces using a GlobalNetworkPolicy.
 		// - Isolating both namespaces with ingress and egress policies
 		// - Asserting only same namespace connectivity exists.
-		framework.ConformanceIt("should correctly isolate namespaces [RunsOnWindows]", func() {
+		framework.ConformanceIt("should correctly isolate namespaces", func() {
 			nsA := f.Namespace
 
 			By("Creating a second namespace B")
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
 			nsB, err := f.CreateNamespace(ctx, f.BaseName+"-b", nil)
 			Expect(err).NotTo(HaveOccurred())
@@ -126,7 +124,7 @@ var _ = describe.CalicoDescribe(
 			By("Creating a default-deny policy selecting both namespaces")
 			var defaultDenyPriority float64 = 5000
 			defaultDenyGNP := v3.NewGlobalNetworkPolicy()
-			defaultDenyGNP.Name = "default-deny-all"
+			defaultDenyGNP.Name = utils.GenerateRandomName("default-deny-all")
 			defaultDenyGNP.Spec.Order = &defaultDenyPriority
 			defaultDenyGNP.Spec.NamespaceSelector = testNamespacesOnly
 			err = cli.Create(ctx, defaultDenyGNP)
@@ -145,7 +143,7 @@ var _ = describe.CalicoDescribe(
 			By("Creating global network policy which allows pods to access kube-dns")
 			var dnsPriority float64 = 400
 			allowEgressToDNS := v3.NewGlobalNetworkPolicy()
-			allowEgressToDNS.Name = "allow-egress-to-kube-dns"
+			allowEgressToDNS.Name = utils.GenerateRandomName("allow-egress-to-dns")
 			allowEgressToDNS.Spec.Order = &dnsPriority
 			allowEgressToDNS.Spec.NamespaceSelector = testNamespacesOnly
 			allowEgressToDNS.Spec.Egress = []v3.Rule{
@@ -221,11 +219,11 @@ var _ = describe.CalicoDescribe(
 
 		framework.ConformanceIt("should support service account selectors", func() {
 			ns := f.Namespace
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
 			By(fmt.Sprintf("Applying a default-deny policy to namespace %s", ns.Name))
-			defaultDeny := newDefaultDenyPolicy(ns.Name)
+			defaultDeny := newDefaultDenyIngressPolicy(ns.Name)
 			err = cli.Create(ctx, defaultDeny)
 			Expect(err).NotTo(HaveOccurred())
 			defer func() {
@@ -286,10 +284,11 @@ var _ = describe.CalicoDescribe(
 
 		framework.ConformanceIt("should support namespace selectors", func() {
 			ns := f.Namespace
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
 
 			By(fmt.Sprintf("Applying a default-deny policy to namespace %s", ns.Name))
-			defaultDeny := newDefaultDenyPolicy(ns.Name)
+			defaultDeny := newDefaultDenyIngressPolicy(ns.Name)
 			err := cli.Create(ctx, defaultDeny)
 			Expect(err).NotTo(HaveOccurred())
 			defer func() {
@@ -306,7 +305,7 @@ var _ = describe.CalicoDescribe(
 
 			np := &v3.GlobalNetworkPolicy{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "allow-through-namespace-selector",
+					Name: utils.GenerateRandomName("allow-through-ns-sel"),
 				},
 				Spec: v3.GlobalNetworkPolicySpec{
 					NamespaceSelector: fmt.Sprintf("kubernetes.io/metadata.name == '%s'", ns.Name),
@@ -315,6 +314,14 @@ var _ = describe.CalicoDescribe(
 						{
 							Action: "Allow",
 							Source: v3.EntityRule{
+								NamespaceSelector: fmt.Sprintf("kubernetes.io/metadata.name == '%s'", ns.Name),
+							},
+						},
+					},
+					Egress: []v3.Rule{
+						{
+							Action: "Allow",
+							Destination: v3.EntityRule{
 								NamespaceSelector: fmt.Sprintf("kubernetes.io/metadata.name == '%s'", ns.Name),
 							},
 						},
@@ -337,7 +344,7 @@ var _ = describe.CalicoDescribe(
 			checker.Execute()
 		})
 
-		framework.ConformanceIt("should support a 'deny egress' policy [RunsOnWindows]", func() {
+		framework.ConformanceIt("should support a 'deny egress' policy", func() {
 			By("Creating calico egress policy which denies traffic within namespace.")
 			nsName := f.Namespace.Name
 			policyName := "deny-egress"
@@ -404,7 +411,7 @@ func newNamespaceIsolationPolicy(name, namespace, ingressSelector, egressSelecto
 	}
 }
 
-func newDefaultDenyPolicy(namespace string) *v3.NetworkPolicy {
+func newDefaultDenyIngressPolicy(namespace string) *v3.NetworkPolicy {
 	return &v3.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "NetworkPolicy",
@@ -415,6 +422,7 @@ func newDefaultDenyPolicy(namespace string) *v3.NetworkPolicy {
 			Namespace: namespace,
 		},
 		Spec: v3.NetworkPolicySpec{
+			// If the spec.types field is not set, it defaults to "Ingress" only.
 			Order:    ptr.Float64(5000),
 			Selector: "all()",
 		},
