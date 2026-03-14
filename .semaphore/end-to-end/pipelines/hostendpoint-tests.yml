@@ -21,7 +21,7 @@ global_job_config:
     - name: marvin-github-ssh-private-key
     - name: banzai-secrets
   env_vars:
-    # This should match the default flags with the additional skip of the "Proxy version v1". There is a problem with the server pod failing to bind to the port for listening.
+    # This should match the default, flags with the additional skip of the "Proxy version v1". There is a problem with the server pod failing to bind to the port for listening.
     - name: K8S_E2E_FLAGS
       value: --ginkgo.focus=(\[sig-calico\]|\[Conformance\]) --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|Proxy.version.v1.should.proxy.through.a.service.and.a.pod|WireGuard)
     - name: DATAPLANE
