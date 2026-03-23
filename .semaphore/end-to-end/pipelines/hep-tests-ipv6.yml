@@ -65,12 +65,12 @@ blocks:
             - name: MANIFEST_FILE
               value: calico-etcd.yaml
             - name: K8S_E2E_FLAGS
-              value: --ginkgo.focus=(\[sig-calico\]|\[Conformance\]) --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|WireGuard|EndpointSlice)
+              value: --ginkgo.focus=should.correctly.implement.Host.Endpoint.NetworkPolicy --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|WireGuard|EndpointSlice)
       env_vars:
         - name: K8S_VERSION
           value: "stable-1" # Normally this would be stable, but kind doesn't always support stable immediately
         - name: K8S_E2E_FLAGS
-          value: --ginkgo.focus=(\[sig-calico\]|\[Conformance\]) --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|WireGuard)
+          value: --ginkgo.focus=should.correctly.implement.Host.Endpoint.NetworkPolicy --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|WireGuard)
         - name: PROVISIONER
           value: local-kind
         - name: ENABLE_DUAL_STACK
@@ -222,7 +222,7 @@ blocks:
         - name: PROVISIONER
           value: "aws-kubeadm"
         - name: K8S_E2E_FLAGS
-          value: --ginkgo.focus=(WireGuard)
+          value: --ginkgo.focus=should.correctly.implement.Host.Endpoint.NetworkPolicy
           # Single VPC only
         - name: VPC_SUBNETS
           value: '["172.16.101.0/24"]'
@@ -253,7 +253,7 @@ blocks:
         - name: PROVISIONER
           value: "aws-kubeadm"
         - name: K8S_E2E_FLAGS
-          value: --ginkgo.focus=(WireGuard)
+          value: --ginkgo.focus=should.correctly.implement.Host.Endpoint.NetworkPolicy
           # Single VPC only
         - name: VPC_SUBNETS
           value: '["172.16.101.0/24"]'
@@ -333,7 +333,7 @@ blocks:
               values: ["stable"]
           env_vars:
             - name: K8S_E2E_FLAGS
-              value: --ginkgo.focus=(\[sig-calico\]|\[Conformance\]) --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\])
+              value: --ginkgo.focus=should.correctly.implement.Host.Endpoint.NetworkPolicy --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\])
             - name: DISABLE_IPIP
               value: "true"
               # Single VPC only
@@ -357,7 +357,7 @@ blocks:
             # The skip "Ingress.API|IngressClass.API" is needed to skip Ingress tests which are only possible in k8s 1.21+
             # The skip "Proxy.version.v1.*pod.and.service.Proxy.\[" is needed to skip an upstream test that only works on k8s 1.24+
             - name: K8S_E2E_FLAGS
-              value: --ginkgo.focus=(\[sig-calico\]|\[Conformance\]) --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|EndpointSlice|Services\sshould|Ingress.API|IngressClass.API|Proxy.version.v1.*pod.and.service.Proxy.\[)
+              value: --ginkgo.focus=should.correctly.implement.Host.Endpoint.NetworkPolicy --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|EndpointSlice|Services\sshould|Ingress.API|IngressClass.API|Proxy.version.v1.*pod.and.service.Proxy.\[)
             - name: DISABLE_IPIP
               value: "true"
               # Single VPC only
@@ -373,119 +373,6 @@ blocks:
           value: "true"
         - name: ENABLE_WIREGUARD
           value: "true"
-
-  ###
-  # Focused tests
-  ###
-  - name: Focused WireGuard E2E (AKS w/ Azure CNI)
-    dependencies: []
-    task:
-      jobs:
-        - name: kdd
-          execution_time_limit:
-            hours: 7
-          commands:
-            - ~/calico/.semaphore/end-to-end/scripts/body_standard.sh
-          matrix:
-            - env_var: PROVISIONER
-              values: ["azr-aks"]
-            - env_var: K8S_VERSION
-              values: ["stable-3", "stable"]
-            - env_var: CNI_PLUGIN
-              values: ["AzureVNET"]
-      env_vars:
-        - name: ENCAPSULATION_TYPE
-          value: "None"
-        - name: INSTALLER
-          value: "helmerator"
-        - name: USE_HASH_RELEASE
-          value: "true"
-        - name: ENABLE_WIREGUARD
-          value: "true"
-        - name: K8S_E2E_FLAGS
-          value: --ginkgo.focus=WireGuard --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\])
-
-  - name: Focused WireGuard E2E (AKS with Calico CNI)
-    dependencies: []
-    task:
-      jobs:
-        - name: kdd
-          execution_time_limit:
-            hours: 7
-          commands:
-            - ~/calico/.semaphore/end-to-end/scripts/body_standard.sh
-          matrix:
-            - env_var: PROVISIONER
-              values: ["azr-aks"]
-            - env_var: K8S_VERSION
-              values: ["stable-3", "stable"]
-            - env_var: CNI_PLUGIN
-              values: ["Calico"]
-      env_vars:
-        - name: ENCAPSULATION_TYPE
-          value: "VXLAN"
-        - name: INSTALLER
-          value: "helmerator"
-        - name: USE_HASH_RELEASE
-          value: "true"
-        - name: ENABLE_WIREGUARD
-          value: "true"
-        - name: K8S_E2E_FLAGS
-          value: --ginkgo.focus=WireGuard --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\])
-        - name: AKS_CNI
-          value: "calico"
-
-  - name: Focused WireGuard E2E (EKS)
-    dependencies: []
-    task:
-      jobs:
-        - name: kdd (AWS CNI)
-          execution_time_limit:
-            hours: 7
-          commands:
-            - ~/calico/.semaphore/end-to-end/scripts/body_standard.sh
-          env_vars:
-            - name: CNI_PLUGIN
-              value: aws
-
-        - name: kdd (Calico CNI)
-          execution_time_limit:
-            hours: 7
-          commands:
-            - ~/calico/.semaphore/end-to-end/scripts/body_standard.sh
-          env_vars:
-            - name: CNI_PLUGIN
-              value: calico
-            # Skipping these upstream k8s tests since they are failing because of limitations of Calico CNI on EKS:
-            # - [IT] "Proxy version v1 A set of valid responses are returned for both pod and service Proxy"
-            # - [IT] "Proxy version v1 should proxy through a service and a pod"
-            # - [IT] "ReplicaSet should serve a basic image on each replica with a public image"
-            # - [IT] "ReplicationController should serve a basic image on each replica with a public image"
-            # - [IT] "ReplicationController should serve a basic image on each replica with a public image"
-            # - [It] "DNS should provide DNS for ExternalName services"
-            # - [It] "DNS should provide DNS for pods for Hostname"
-            # - [It] "DNS should provide DNS for pods for Subdomain"
-            # - [It] "DNS should provide DNS for services"
-            # - [It] "DNS should provide DNS for the cluster"
-            # See details: https://docs.tigera.io/calico/latest/getting-started/kubernetes/managed-public-cloud/eks#install-eks-with-calico-networking:~:text=Calico%20networking%20cannot,on%20this%20setting.
-            - name: K8S_E2E_FLAGS
-              value: --ginkgo.focus=WireGuard --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|both.pod.and.service.Proxy\b|proxy.through.a.service.and.a.pod|replica.with.a.public.image|DNS.for.ExternalName.services|DNS.for.pods.for.Hostname|DNS.for.pods.for.Subdomain|DNS.for.services|DNS.for.the.cluster|DNS.qualified.names.for.services)
-      env_vars:
-        - name: AWS_K8S_CNI_VERSION
-          value: "NA"
-        - name: PROVISIONER
-          value: "aws-eks"
-        - name: K8S_VERSION
-          value: "stable-1"
-        - name: INSTALLER
-          value: "helmerator"
-        - name: USE_HASH_RELEASE
-          value: "true"
-        - name: ENABLE_WIREGUARD
-          value: "true"
-        - name: K8S_E2E_FLAGS
-          value: --ginkgo.focus=WireGuard --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\])
-
 
 promotions:
   - name: Cleanup jobs
