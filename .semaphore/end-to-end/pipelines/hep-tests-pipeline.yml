@@ -21,9 +21,9 @@ global_job_config:
     - name: marvin-github-ssh-private-key
     - name: banzai-secrets
   env_vars:
-    # This should match default flags with the additional skip of the "Proxy version v1". There is a problem with the server pod failing to bind to the port for listening.
+    # This should match the default flags with the additional skip of the "Proxy version v1". There is a problem with the server pod failing to bind to the port for listening.
     - name: K8S_E2E_FLAGS
-      value: --ginkgo.focus=should.correctly.implement.Host.Endpoint.NetworkPolicy --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|Proxy.version.v1.should.proxy.through.a.service.and.a.pod|WireGuard)
+      value: --ginkgo.focus=(\[sig-calico\]|\[Conformance\]) --ginkgo.skip=(\[Slow\]|\[Disruptive\]|\[DataPath\]|Proxy.version.v1.should.proxy.through.a.service.and.a.pod|WireGuard)
     - name: DATAPLANE
       value: "CalicoIptables"
     - name: IPV4_POD_CIDR
@@ -34,86 +34,58 @@ global_job_config:
       value: "true"
     - name: PRIVATE_REGISTRY
       value: "quay.io/"
-#    - name: K8S_E2E_IMAGE
-#      value: "gcr.io/tigera-dev/k8s-e2e@sha256:805cc9d28cff0a0cee4de84a5fe32072461646e4bd65a89a82a332203cd9f421"
+    - name: K8S_E2E_IMAGE
+      value: "gcr.io/tigera-dev/k8s-e2e@sha256:d087f146f21c51e49cd1bb06271a44e3a90502328c121c0021907665257ce911"
 
 
 blocks:
-  # This is the old wireguard tests
-  - name: WireGuard regression k8s-e2e
+  # this is from the old openshift file
+  - name: Openshift OCP
     dependencies: []
     task:
       jobs:
-        - name: kdd - new
+        - name: hashrelease
           execution_time_limit:
-            hours: 7
+            hours: 6
           commands:
             - ~/calico/.semaphore/end-to-end/scripts/body_standard.sh
           matrix:
-            - env_var: K8S_VERSION
-              values: ["stable"]
-          env_vars:
-            - name: DISABLE_IPIP
-              value: "true"
-              # Single VPC only
-            - name: VPC_SUBNETS
-              value: '["172.16.101.0/24"]'
-            - name: IPAM_TEST_POOL_SUBNET
-              value: "10.0.0.0/29"
-            - name: PROVISIONER
-              value: "aws-kubeadm"
-
-        - name: kdd - old
-          execution_time_limit:
-            hours: 7
-          commands:
-            - ~/calico/.semaphore/end-to-end/scripts/body_standard.sh
-          matrix:
-            - env_var: K8S_VERSION
-              values: ["stable-3"]
-          env_vars:
-            # The skip "EndpointSlice\|Services\sshould" is needed to skip Endpoint slice tests which are only possible in k8s 1.21+
-            # The skip "Ingress.API|IngressClass.API" is needed to skip Ingress tests which are only possible in k8s 1.21+
-            # The skip "Proxy.version.v1.*pod.and.service.Proxy.\[" is needed to skip an upstream test that only works on k8s 1.24+
-            - name: DISABLE_IPIP
-              value: "true"
-              # Single VPC only
-            - name: VPC_SUBNETS
-              value: '["172.16.101.0/24"]'
-            - name: IPAM_TEST_POOL_SUBNET
-              value: "10.0.0.0/29"
-            - name: PROVISIONER
-              value: "aws-kubeadm"
-
-        - name: AKS w AKS CNI + Overlay
-          execution_time_limit:
-            hours: 7
-          commands:
-            - ~/calico/.semaphore/end-to-end/scripts/body_standard.sh
-          env_vars:
-            - name: ENABLE_EXTERNAL_NODE # No code in banzai-core yet for external nodes on Azure
-              value: "false"
-            - name: NETWORK_PLUGIN_MODE
-              value: "overlay"
-            - name: AZ_NETWORK_PLUGIN
-              value: "azure"
-            - name: IPV4_POD_CIDR
-              value: "10.244.0.0/16"
-            - name: INSTALLER
-              value: "operator"
-            - name: PROVISIONER
-              value: "azr-aks"
-            - name: AZ_CREATE_MODE
-              value: AKS
-              # External node is false, so we should skip external node tests: "ExternalNode|outside.the.cluster|external.to.nodeport"
-              # This uses AKS-CNI, so Strict Affinity and MTU tests do not apply: "MTU|StrictAffinity"
+            - env_var: OPENSHIFT_VERSION
+              values: ["4.18.29", "4.19.20", "4.20.6"]
       env_vars:
-        - name: USE_HASH_RELEASE
-          value: "true"
-        - name: ENABLE_WIREGUARD
-          value: "true"
+        - name: PROVISIONER
+          value: aws-openshift
+        - name: INSTALLER
+          value: operator
 
+  # this is from the old arm64 file
+  - name: ARM64 - smoke tests
+    dependencies: []
+    task:
+      env_vars:
+        - name: INSTALLER
+          value: operator
+        - name: STERN_CHECK
+          value: DISABLED
+      jobs:
+        - name: AKS - ARM64
+          execution_time_limit:
+            hours: 4
+          commands:
+            - ~/calico/.semaphore/end-to-end/scripts/body_standard.sh
+          matrix:
+            - env_var: K8S_VERSION
+              values: ["stable-1"]
+            - env_var: AZ_NETWORK_PLUGIN
+              values: ["azure", "none"]
+            - env_var: CLUSTER_MODE
+              values: [""]
 
+          env_vars:
+            - name: PROVISIONER
+              value: azr-aks
+            - name: AZ_VM_SIZE
+              value: "Standard_D4plds_v5"
 
 promotions:
   - name: Cleanup jobs
