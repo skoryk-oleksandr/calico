@@ -35,7 +35,7 @@ global_job_config:
     - name: PRIVATE_REGISTRY
       value: "quay.io/"
     - name: K8S_E2E_IMAGE
-      value: "gcr.io/tigera-dev/k8s-e2e@sha256:a51145b1ac9da66a3aea983c2bf8258af24c0c60796736b1d6ac8a4e589d1d4c"
+      value: "gcr.io/tigera-dev/k8s-e2e@sha256:bb0efe3afafb9f43e63d13e2167c9c425ed309bca428d9beeb89673565d1ad73"
 
 blocks:
   - name: dual-stack k8s-e2e
