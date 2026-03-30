@@ -33,6 +33,10 @@ phase() { echo -e "\n${BLUE}========== $1 ==========${NC}\n"; }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SECRETS_PATH="${SECRETS_PATH:-$HOME/.banzai/secrets}"
 MACHINE_TYPE="${MACHINE_TYPE:-n2-standard-4}"
+# Set PRODUCT to "calient" for Calico Enterprise, "calico" for OSS (default: calico)
+PRODUCT="${PRODUCT:-calico}"
+# Release stream: Enterprise uses versioned streams (e.g. v3.23), OSS uses "master"
+RELEASE_STREAM="${RELEASE_STREAM:-master}"
 
 # ============================================================
 #  Step 1: Check prerequisites
@@ -60,10 +64,8 @@ phase "Step 2: Create Profile Template"
 
 TPL_FILE="$PWD/gcp-kubevirt.tpl.yaml"
 
-if [ -f "$TPL_FILE" ]; then
-    info "Profile template already exists: $TPL_FILE"
-else
-    cat > "$TPL_FILE" <<EOF
+# Always regenerate template to pick up current PRODUCT/RELEASE_STREAM
+cat > "$TPL_FILE" <<EOF
 metadata:
   name: gcp-kubevirt
   desc: GCP cluster with KubeVirt VMs for live migration demo
@@ -75,11 +77,11 @@ variables:
   - name: PROVISIONER
     value: gcp-kubeadm
   - name: PRODUCT
-    value: calico
+    value: $PRODUCT
   - name: INSTALLER
     value: operator
   - name: RELEASE_STREAM
-    value: master
+    value: $RELEASE_STREAM
   - name: USE_HASH_RELEASE
     value: true
   - name: K8S_VERSION
@@ -95,8 +97,7 @@ variables:
   - name: GOOGLE_NODE_MACHINE_TYPE
     value: $MACHINE_TYPE
 EOF
-    pass "Created profile template: $TPL_FILE (machine type: $MACHINE_TYPE)"
-fi
+pass "Created profile template: $TPL_FILE (PRODUCT: $PRODUCT, RELEASE_STREAM: $RELEASE_STREAM)"
 
 # ============================================================
 #  Step 3: Initialize profile with bz init
@@ -109,12 +110,21 @@ PROFILE_DIR="$PWD/gcp-kubevirt"
 if [ -d "$PROFILE_DIR" ]; then
     info "Profile directory already exists: $PROFILE_DIR — reusing"
 else
-    info "Running bz init tpl with Song's kubevirt-fix branch..."
-    bz init tpl -n gcp-kubevirt --core-branch song-kubevirt-fix "$TPL_FILE"
+    info "Running bz init tpl with stable-v0.9 branch..."
+    bz init tpl -n gcp-kubevirt --core-branch stable-v0.9 "$TPL_FILE"
     pass "Profile initialized"
 fi
 
 TASKVARS="$PROFILE_DIR/Taskvars.yml"
+
+# Force PRODUCT in Taskvars.yml — bz init may override the template value
+# based on release stream detection (e.g. OSS master stream -> calico)
+CURRENT_PRODUCT=$(grep '^PRODUCT:' "$TASKVARS" | awk '{print $2}')
+if [ "$CURRENT_PRODUCT" != "$PRODUCT" ]; then
+    info "Patching Taskvars.yml: PRODUCT $CURRENT_PRODUCT -> $PRODUCT"
+    sed -i "s/^PRODUCT:.*/PRODUCT: $PRODUCT/" "$TASKVARS"
+    pass "Taskvars.yml PRODUCT set to $PRODUCT"
+fi
 
 # ============================================================
 #  Step 4: Provision Cluster (~20 minutes)
@@ -142,11 +152,33 @@ if ! which gkm >/dev/null 2>&1; then
     pass "gkm installed to /usr/local/bin"
 fi
 
-info "Running gkm tasks..."
-gkm run install-calico-parent && \
-    gkm run deploy-kubevirt && \
+info "Setting up networking (L2TP tunnels and BGP TOR)..."
+gkm run setup-l2tp && \
+    gkm run setup-tor || fail "Networking setup failed"
+pass "L2TP and BGP networking configured"
+
+# Export KUBECONFIG for kubectl commands
+KUBECONFIG_PATH=$(grep '^KUBECONFIG:' "$TASKVARS" | awk '{print $2}')
+export KUBECONFIG="$KUBECONFIG_PATH"
+
+info "Installing Calico (using bz install to respect PRODUCT setting)..."
+(cd "$PROFILE_DIR" && bz install) || fail "bz install failed"
+
+# Patch Installation CR with L2TP interface detection if not already set
+# (bz install may not configure nodeAddressAutodetectionV4 for l2tpeth.*)
+CURRENT_IFACE=$(kubectl get installation default -o jsonpath='{.spec.calicoNetwork.nodeAddressAutodetectionV4.interface}' 2>/dev/null)
+if [ "$CURRENT_IFACE" != "l2tpeth.*" ]; then
+    info "Patching Installation CR with L2TP interface detection..."
+    kubectl patch installation default --type merge -p '{"spec":{"calicoNetwork":{"nodeAddressAutodetectionV4":{"interface":"l2tpeth.*"}}}}'
+    info "Waiting for calico-node pods to restart with new config..."
+    kubectl rollout status daemonset/calico-node -n calico-system --timeout=5m
+fi
+pass "Calico installed"
+
+info "Deploying KubeVirt and VMs..."
+gkm run deploy-kubevirt && \
     gkm run create-vms && \
-    gkm run setup-vms || fail "gkm tasks failed"
+    gkm run setup-vms || fail "gkm KubeVirt tasks failed"
 pass "Calico and KubeVirt deployed"
 
 # ============================================================
@@ -226,12 +258,22 @@ else
 fi
 echo
 
-# Check cross-VM connectivity
+# Check cross-VM connectivity (retry — VM guest networking may still be initializing)
 info "Testing cross-VM connectivity (ping vm1 from a test pod)..."
-if kubectl run --rm -i --restart=Never --image=busybox demo-ping-test -- ping -c 3 -W 2 "$VM1_IP" >/dev/null 2>&1; then
+PING_OK=false
+for attempt in $(seq 1 12); do
+    if kubectl run --rm -i --restart=Never --image=busybox "demo-ping-test-${attempt}" -- ping -c 3 -W 2 "$VM1_IP" >/dev/null 2>&1; then
+        PING_OK=true
+        break
+    fi
+    info "Ping attempt $attempt failed, retrying in 10s (VM guest network may still be starting)..."
+    kubectl delete pod "demo-ping-test-${attempt}" --force --grace-period=0 >/dev/null 2>&1 || true
+    sleep 10
+done
+if $PING_OK; then
     pass "Cross-VM connectivity works"
 else
-    fail "Cannot ping vm1 ($VM1_IP) from cluster"
+    fail "Cannot ping vm1 ($VM1_IP) from cluster after 12 attempts"
 fi
 echo
 
