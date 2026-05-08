@@ -1,0 +1,63 @@
+# This workflow gates PR merges on an explicit backport decision:
+# 1. Discover available 'backport/release-vX.Y' labels in the repo.
+# 2. Post or update a single sticky comment on the PR listing those labels.
+# 3. Fail the check unless the PR has either 'skip-releases-backport' or at
+#    least one 'backport/release-vX.Y' label set.
+# Add this check to required status checks in branch protection to block merge.
+
+name: Validate Backport Labels
+on:
+  pull_request:
+    types: [opened, reopened, labeled, unlabeled, synchronize, ready_for_review]
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Check backport labels and update comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request;
+
+            const labels = await github.paginate(github.rest.issues.listLabelsForRepo, {
+              owner, repo, per_page: 100,
+            });
+            const backportRe = /^backport\/release-v\d+\.\d+$/;
+            const available = labels.map(l => l.name).filter(n => backportRe.test(n)).sort();
+
+            const prLabels = pr.labels.map(l => l.name);
+            const hasNoBackport = prLabels.includes('skip-releases-backport');
+            const hasBackport = prLabels.some(n => backportRe.test(n));
+
+            const marker = '<!-- backport-label-bot -->';
+            const lines = [marker, '### Backport label check', ''];
+            if (hasNoBackport || hasBackport) {
+              lines.push('Backport decision recorded.');
+            } else {
+              lines.push('This PR is missing a backport decision. Add **`skip-releases-backport`** or one or more of:');
+              lines.push('');
+              if (available.length === 0) {
+                lines.push('_No `backport/release-vX.Y` labels are currently defined in this repo._');
+              } else {
+                for (const n of available) lines.push(`- \`${n}\``);
+              }
+            }
+            const body = lines.join('\n');
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: pr.number, per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body });
+            }
+
+            if (!hasNoBackport && !hasBackport) {
+              core.setFailed('PR must have either `skip-releases-backport` or a `backport/release-vX.Y` label.');
+            }
