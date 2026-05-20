@@ -5,20 +5,34 @@
 # historic PRs keep their labels intact for audit purposes. If a release
 # branch is retired, archive its label manually.
 #
-# Triggers: daily schedule, on branch creation (covers new release cuts),
-# and manual dispatch.
+# Triggers: on branch creation (covers new release cuts) and manual dispatch.
+# There is intentionally no scheduled run — label creation relies on the
+# 'create' webhook for new branches, with check_backport_labels.yml as a
+# PR-time safety net. Use workflow_dispatch to backfill if a 'create' event
+# is ever missed (e.g., Actions outage).
+#
+# Note: check_backport_labels.yml runs the same label-creation logic at PR
+# time. Keep both in sync (search for CHANGE-BOTH).
 
 name: Sync Backport Labels
 on:
-  schedule:
-    - cron: '0 6 * * *'
   create:
   workflow_dispatch:
 
+# Single global key by design: serializes the branch-create event and any
+# manual dispatch. Concurrent branch creations (rare, but possible during a
+# release cut) queue rather than run in parallel.
+concurrency:
+  group: sync-backport-labels
+  cancel-in-progress: false
+
 jobs:
   sync:
-    if: github.event_name != 'create' || github.event.ref_type == 'branch'
+    # On 'create' events, only run for release-v* branch creations.
+    # Tags and topic branches do not affect the backport-label set.
+    if: github.event_name != 'create' || (github.event.ref_type == 'branch' && startsWith(github.event.ref, 'release-v'))
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       issues: write
@@ -30,27 +44,76 @@ jobs:
             const { owner, repo } = context.repo;
             const branchRe = /^release-v\d+\.\d+$/;
 
-            const branches = await github.paginate(github.rest.repos.listBranches, {
-              owner, repo, per_page: 100,
+            async function withRetry(fn, label) {
+              const maxAttempts = 3;
+              for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                  return await fn();
+                } catch (e) {
+                  const transient = (e.status >= 500 && e.status < 600) ||
+                                    e.status === 429 ||
+                                    e.status === 408 ||
+                                    typeof e.status === 'undefined' ||
+                                    e.code === 'ETIMEDOUT' ||
+                                    e.code === 'ECONNRESET' ||
+                                    (e.status === 403 && /rate limit|secondary/i.test(e.message || ''));
+                  if (!transient || attempt === maxAttempts) throw e;
+                  const delayMs = 500 * Math.pow(2, attempt - 1);
+                  core.info(`Transient error on ${label} (status=${e.status}, code=${e.code}); retrying in ${delayMs}ms.`);
+                  await new Promise(r => setTimeout(r, delayMs));
+                }
+              }
+              throw new Error(`unreachable: withRetry exited loop without returning (${label})`);
+            }
+
+            // listMatchingRefs returns any ref starting with the prefix;
+            // branchRe is the actual correctness guarantee, filtering out
+            // shapes like release-v3.30-hotfix or release-v4.
+            const refs = await github.paginate(github.rest.git.listMatchingRefs, {
+              owner, repo, ref: 'heads/release-v', per_page: 100,
             });
-            const releaseBranches = branches.map(b => b.name).filter(n => branchRe.test(n));
+            const releaseBranches = refs
+              .map(r => r.ref.replace(/^refs\/heads\//, ''))
+              .filter(n => branchRe.test(n));
 
             const labels = await github.paginate(github.rest.issues.listLabelsForRepo, {
               owner, repo, per_page: 100,
             });
             const existing = new Set(labels.map(l => l.name));
 
-            const color = '0e8a16';
-            const description = 'Cherry-pick this PR to the matching release branch.';
+            // CHANGE-BOTH: label-creation constants are duplicated in
+            // check_backport_labels.yml. Keep them in sync.
+            const labelColor = '0e8a16';
+            const labelDescription = 'Cherry-pick this PR to the matching release branch.';
 
-            let created = 0;
+            let createdCount = 0;
+            let failedCount = 0;
             for (const branch of releaseBranches) {
               const labelName = `backport/${branch}`;
               if (existing.has(labelName)) continue;
               core.info(`Creating label: ${labelName}`);
-              await github.rest.issues.createLabel({
-                owner, repo, name: labelName, color, description,
-              });
-              created++;
+              try {
+                await withRetry(() => github.rest.issues.createLabel({
+                  owner, repo, name: labelName, color: labelColor, description: labelDescription,
+                }), `createLabel(${labelName})`);
+                createdCount++;
+              } catch (e) {
+                const alreadyExists = e.status === 422 && (
+                  e.response?.data?.errors?.some(err => err.code === 'already_exists') ||
+                  /already[_ ]exists/i.test(e.message || '')
+                );
+                if (alreadyExists) {
+                  // Race with check_backport_labels.yml — label just created.
+                } else {
+                  // Per-label resilience: surface but continue so one bad
+                  // label does not poison the rest. There is no scheduled
+                  // retry — operator must rerun via workflow_dispatch.
+                  core.warning(`Failed to create label ${labelName}: ${e.message}`);
+                  failedCount++;
+                }
+              }
             }
-            core.info(`Release branches: ${releaseBranches.length}, labels created: ${created}.`);
+            core.info(`Release branches: ${releaseBranches.length}, labels created: ${createdCount}, failures: ${failedCount}.`);
+            if (failedCount > 0) {
+              core.warning(`${failedCount} label(s) failed to create. There is no scheduled retry — rerun this workflow via workflow_dispatch to backfill.`);
+            }
