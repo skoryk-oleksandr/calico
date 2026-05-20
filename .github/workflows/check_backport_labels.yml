@@ -1,26 +1,37 @@
 # This workflow gates PR merges on an explicit backport decision:
 # 1. Ensure a 'backport/release-vX.Y' label exists for every release branch
-#    (idempotent — mirrors sync_backport_labels.yml so new branches are covered
-#    even before the daily sync runs).
+#    (idempotent — mirrors sync_backport_labels.yml so a label is created at
+#    PR time if the 'create' event on the sister workflow ever misses the
+#    branch). The label-creation logic is duplicated in
+#    sync_backport_labels.yml; keep them in sync (search for CHANGE-BOTH).
 # 2. Post a one-time comment listing the available backport labels. This
-#    comment is never rewritten, so its label list reflects the moment the PR
-#    was first processed.
+#    comment is never rewritten and carries a snapshot-date disclaimer.
 # 3. Post or update a sticky decision comment that asks for a backport choice
 #    and points reviewers at the list comment above.
 # 4. Fail the check unless the PR has either 'skip-releases-backport' or at
-#    least one 'backport/release-vX.Y' label set.
+#    least one 'backport/release-vX.Y' label set. The gate decision is
+#    computed from live PR labels and is never masked by comment-write errors.
 # Add this check to required status checks in branch protection to block merge.
 
 name: Validate Backport Labels
 on:
   pull_request:
     types: [opened, reopened, labeled, unlabeled, synchronize, ready_for_review]
+
+# Per-PR serialization. cancel-in-progress is false so a fast label toggle
+# does not kill an in-flight gate computation. Under rapid toggles GitHub
+# may coalesce queued events; the gate is still correct because it always
+# reads live labels at execution time.
+concurrency:
+  group: backport-labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: write
       issues: write
     steps:
       - name: Check backport labels and update comment
@@ -30,69 +41,267 @@ jobs:
             const { owner, repo } = context.repo;
             const pr = context.payload.pull_request;
 
+            async function withRetry(fn, label) {
+              const maxAttempts = 3;
+              for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                  return await fn();
+                } catch (e) {
+                  const transient = (e.status >= 500 && e.status < 600) ||
+                                    e.status === 429 ||
+                                    e.status === 408 ||
+                                    typeof e.status === 'undefined' ||
+                                    e.code === 'ETIMEDOUT' ||
+                                    e.code === 'ECONNRESET' ||
+                                    (e.status === 403 && /rate limit|secondary/i.test(e.message || ''));
+                  if (!transient || attempt === maxAttempts) throw e;
+                  const delayMs = 500 * Math.pow(2, attempt - 1);
+                  core.info(`Transient error on ${label} (status=${e.status}, code=${e.code}); retrying in ${delayMs}ms.`);
+                  await new Promise(r => setTimeout(r, delayMs));
+                }
+              }
+              throw new Error(`unreachable: withRetry exited loop without returning (${label})`);
+            }
+
+            // Label toggles and code pushes cannot create a new release
+            // branch, so skip ref enumeration + createLabel work on those
+            // events to save API budget. The 'create' trigger in
+            // sync_backport_labels.yml covers new release branches. The
+            // gate still uses live labels below.
+            const action = context.payload.action;
+            const skipLabelCreation = action === 'labeled' ||
+                                      action === 'unlabeled' ||
+                                      action === 'synchronize';
+
+            // CHANGE-BOTH: label-creation constants are duplicated in
+            // sync_backport_labels.yml. Keep them in sync.
+            const labelColor = '0e8a16';
+            const labelDescription = 'Cherry-pick this PR to the matching release branch.';
             const branchRe = /^release-v\d+\.\d+$/;
-            const branches = await github.paginate(github.rest.repos.listBranches, {
-              owner, repo, per_page: 100,
-            });
-            const releaseBranches = branches.map(b => b.name).filter(n => branchRe.test(n));
+
+            let releaseBranches = [];
+            let createdCount = 0;
+            let failedLabelCount = 0;
+            let labelCreationBlocked = false;
+
+            if (!skipLabelCreation) {
+              // listMatchingRefs returns any ref starting with the prefix;
+              // branchRe is the actual correctness guarantee, filtering out
+              // shapes like release-v3.30-hotfix or release-v4.
+              const refs = await github.paginate(github.rest.git.listMatchingRefs, {
+                owner, repo, ref: 'heads/release-v', per_page: 100,
+              });
+              releaseBranches = refs
+                .map(r => r.ref.replace(/^refs\/heads\//, ''))
+                .filter(n => branchRe.test(n));
+            }
 
             const allLabels = await github.paginate(github.rest.issues.listLabelsForRepo, {
               owner, repo, per_page: 100,
             });
             const existingLabels = new Set(allLabels.map(l => l.name));
 
-            const labelColor = '0e8a16';
-            const labelDescription = 'Cherry-pick this PR to the matching release branch.';
-            for (const branch of releaseBranches) {
-              const labelName = `backport/${branch}`;
-              if (existingLabels.has(labelName)) continue;
-              core.info(`Creating label: ${labelName}`);
-              await github.rest.issues.createLabel({
-                owner, repo, name: labelName, color: labelColor, description: labelDescription,
-              });
-              existingLabels.add(labelName);
+            if (!skipLabelCreation) {
+              for (const branch of releaseBranches) {
+                const labelName = `backport/${branch}`;
+                if (existingLabels.has(labelName)) continue;
+                core.info(`Creating label: ${labelName}`);
+                let created = false;
+                try {
+                  // CHANGE-BOTH: createLabel is wrapped in withRetry here and
+                  // in sync_backport_labels.yml. Keep both wrapped.
+                  await withRetry(() => github.rest.issues.createLabel({
+                    owner, repo, name: labelName, color: labelColor, description: labelDescription,
+                  }), `createLabel(${labelName})`);
+                  createdCount++;
+                  created = true;
+                } catch (e) {
+                  const alreadyExists = e.status === 422 && (
+                    e.response?.data?.errors?.some(err => err.code === 'already_exists') ||
+                    /already[_ ]exists/i.test(e.message || '')
+                  );
+                  if (alreadyExists) {
+                    // Race with sync_backport_labels.yml — label just created.
+                    created = true;
+                  } else if (e.status === 403) {
+                    // Fork PR — token has no write scope. A maintainer must
+                    // run workflow_dispatch on sync_backport_labels.yml to
+                    // backfill, or open a same-repo PR which can create it.
+                    core.warning(`Cannot create label ${labelName} (403). Run workflow_dispatch on sync_backport_labels.yml to backfill.`);
+                    labelCreationBlocked = true;
+                    break;
+                  } else {
+                    // Per-label resilience: surface but continue so one bad
+                    // label does not block the rest. The next PR event for
+                    // this PR will retry; ops can also workflow_dispatch the
+                    // sync workflow to force a global retry.
+                    core.warning(`Failed to create label ${labelName}: ${e.message}`);
+                    failedLabelCount++;
+                  }
+                }
+                // Only mark as existing if it really does — otherwise the
+                // snapshot list and gate error would advertise labels that
+                // are not actually present in the repo.
+                if (created) existingLabels.add(labelName);
+              }
             }
 
             const backportRe = /^backport\/release-v\d+\.\d+$/;
             const available = [...existingLabels].filter(n => backportRe.test(n)).sort();
 
-            const prLabels = pr.labels.map(l => l.name);
-            const hasNoBackport = prLabels.includes('skip-releases-backport');
-            const hasBackport = prLabels.some(n => backportRe.test(n));
-
-            const comments = await github.paginate(github.rest.issues.listComments, {
+            const liveLabels = await github.paginate(github.rest.issues.listLabelsOnIssue, {
               owner, repo, issue_number: pr.number, per_page: 100,
             });
+            const prLabels = liveLabels.map(l => l.name);
+            const hasNoBackport = prLabels.includes('skip-releases-backport');
+            const hasBackport = prLabels.some(n => backportRe.test(n));
+            const gatePassed = hasNoBackport || hasBackport;
 
             const listMarker = '<!-- backport-label-list -->';
-            const hasListComment = comments.some(c => c.body && c.body.startsWith(listMarker));
-            if (!hasListComment) {
-              const listLines = [listMarker, '### Available backport labels', ''];
-              if (available.length === 0) {
-                listLines.push('_No `backport/release-vX.Y` labels are currently defined in this repo._');
-              } else {
-                for (const n of available) listLines.push(`- \`${n}\``);
-              }
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: pr.number, body: listLines.join('\n'),
-              });
-            }
-
             const decisionMarker = '<!-- backport-label-bot -->';
-            const decisionLines = [decisionMarker, '### Backport label check', ''];
-            if (hasNoBackport || hasBackport) {
-              decisionLines.push('Backport decision recorded.');
-            } else {
-              decisionLines.push('This PR is missing a backport decision. Add **`skip-releases-backport`** or one of the `backport/release-vX.Y` labels listed in the comment above.');
-            }
-            const decisionBody = decisionLines.join('\n');
-            const existingDecision = comments.find(c => c.body && c.body.startsWith(decisionMarker));
-            if (existingDecision) {
-              await github.rest.issues.updateComment({ owner, repo, comment_id: existingDecision.id, body: decisionBody });
-            } else {
-              await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body: decisionBody });
+
+            try {
+              let comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: pr.number, per_page: 100,
+              });
+              // Defensive sort: the Issues comments API does not formally
+              // document its ordering. Comment IDs are monotonic.
+              comments.sort((a, b) => a.id - b.id);
+
+              if (!comments.some(c => c.body && c.body.startsWith(listMarker))) {
+                // Narrow the race window: re-read immediately before create.
+                const recheckPre = await github.paginate(github.rest.issues.listComments, {
+                  owner, repo, issue_number: pr.number, per_page: 100,
+                });
+                if (!recheckPre.some(c => c.body && c.body.startsWith(listMarker))) {
+                  // toISOString always returns UTC; do not switch to toLocaleDateString.
+                  const snapshotDate = new Date().toISOString().slice(0, 10);
+                  const listLines = [
+                    listMarker,
+                    '### Available backport labels',
+                    '',
+                    `_Snapshot taken ${snapshotDate} (UTC); this list is not refreshed — new release branches may have been added since._`,
+                    '',
+                  ];
+                  if (available.length === 0) {
+                    listLines.push('_No `backport/release-vX.Y` labels are currently defined in this repo._');
+                  } else {
+                    // Filtered through backportRe above; safe to interpolate.
+                    for (const n of available) listLines.push(`- \`${n}\``);
+                  }
+                  if (labelCreationBlocked) {
+                    listLines.push('');
+                    listLines.push('_Note: this run had a read-only token (likely a fork PR), so any missing `backport/release-vX.Y` labels could not be created. A maintainer can run the `Sync Backport Labels` workflow via `workflow_dispatch` to backfill._');
+                  }
+                  await withRetry(() => github.rest.issues.createComment({
+                    owner, repo, issue_number: pr.number, body: listLines.join('\n'),
+                  }), 'createComment(list)');
+                  // Self-healing across runs. Concurrent runs in the same
+                  // window can temporarily create duplicates; subsequent
+                  // runs see all of them, keep the oldest by id, and delete
+                  // the rest. Concurrent delete calls on the same victim id
+                  // are idempotent (one succeeds, others 404 and are caught
+                  // below).
+                  const recheckPost = await github.paginate(github.rest.issues.listComments, {
+                    owner, repo, issue_number: pr.number, per_page: 100,
+                  });
+                  const dupes = recheckPost
+                    .filter(c => c.body && c.body.startsWith(listMarker))
+                    .sort((a, b) => a.id - b.id);
+                  for (const dup of dupes.slice(1)) {
+                    try {
+                      await withRetry(() => github.rest.issues.deleteComment({
+                        owner, repo, comment_id: dup.id,
+                      }), 'deleteComment(list-dup)');
+                      core.info(`Deleted duplicate list comment ${dup.id}.`);
+                    } catch (e) {
+                      core.warning(`Could not delete duplicate list comment ${dup.id}: ${e.message}`);
+                    }
+                  }
+                  comments = recheckPost;
+                } else {
+                  comments = recheckPre;
+                }
+                comments.sort((a, b) => a.id - b.id);
+              }
+
+              const decisionMatches = comments.filter(c => c.body && c.body.startsWith(decisionMarker));
+              const decisionLines = [decisionMarker, '### Backport label check', ''];
+              if (gatePassed) {
+                decisionLines.push('Backport decision recorded.');
+              } else {
+                decisionLines.push('This PR is missing a backport decision. Add **`skip-releases-backport`** or one of the `backport/release-vX.Y` labels listed in the comment above.');
+              }
+              const decisionBody = decisionLines.join('\n');
+
+              // Delete extras FIRST so the screen state is correct even if the
+              // run is killed between deletes and the update below.
+              if (decisionMatches.length > 1) {
+                core.warning(`Found ${decisionMatches.length} decision comments; deleting ${decisionMatches.length - 1} extras.`);
+                for (const extra of decisionMatches.slice(1)) {
+                  try {
+                    await withRetry(() => github.rest.issues.deleteComment({
+                      owner, repo, comment_id: extra.id,
+                    }), 'deleteComment(decision-dup)');
+                  } catch (e) {
+                    core.warning(`Could not delete extra decision comment ${extra.id}: ${e.message}`);
+                  }
+                }
+              }
+
+              const oldest = decisionMatches[0];
+              if (oldest) {
+                if (oldest.body === decisionBody) {
+                  core.info('Decision comment unchanged; skipping update to avoid notification churn.');
+                } else {
+                  try {
+                    await withRetry(() => github.rest.issues.updateComment({
+                      owner, repo, comment_id: oldest.id, body: decisionBody,
+                    }), 'updateComment(decision)');
+                  } catch (e) {
+                    if (e.status === 404) {
+                      // Sticky deleted between read and write — recreate.
+                      await withRetry(() => github.rest.issues.createComment({
+                        owner, repo, issue_number: pr.number, body: decisionBody,
+                      }), 'createComment(decision)');
+                    } else {
+                      throw e;
+                    }
+                  }
+                }
+              } else {
+                await withRetry(() => github.rest.issues.createComment({
+                  owner, repo, issue_number: pr.number, body: decisionBody,
+                }), 'createComment(decision)');
+              }
+            } catch (e) {
+              if (e.status === 403) {
+                core.info('Comment writes skipped (no write token, likely fork PR). Gate result is unaffected.');
+              } else if (e.status === 404 || e.status === 409 || e.status === 429 ||
+                         (e.status >= 500 && e.status < 600)) {
+                core.warning(`Comment-write API error (${e.status}): ${e.message}. Gate result is unaffected.`);
+              } else {
+                // Unknown error class — surface as an annotation so bugs are
+                // loud, but do not mask the gate decision computed above.
+                core.error(`Unexpected error in comment block: ${e.message}\n${e.stack || ''}`);
+              }
             }
 
-            if (!hasNoBackport && !hasBackport) {
-              core.setFailed('PR must have either `skip-releases-backport` or a `backport/release-vX.Y` label.');
+            let creationSummary;
+            if (skipLabelCreation) {
+              // releaseBranches/createdCount are 0 by skip, not by truth — omit
+              // them so the log does not read as "we tried and found nothing."
+              creationSummary = `label-creation skipped (${action} event)`;
+            } else {
+              const forkNote = labelCreationBlocked ? ' (blocked early — fork PR)' : '';
+              const failNote = failedLabelCount ? `, label-create failures: ${failedLabelCount}` : '';
+              creationSummary = `release branches: ${releaseBranches.length}, labels created: ${createdCount}${failNote}${forkNote}`;
+            }
+            core.info(`${creationSummary}, available backport labels: ${available.length}, gate ${gatePassed ? 'passed' : 'failed'}.`);
+
+            if (!gatePassed) {
+              const inline = available.length === 0
+                ? '(no backport labels currently defined)'
+                : available.map(n => `\`${n}\``).join(', ');
+              core.setFailed(`PR must have either \`skip-releases-backport\` or a \`backport/release-vX.Y\` label. Available: ${inline}. PR: ${pr.html_url}`);
             }
