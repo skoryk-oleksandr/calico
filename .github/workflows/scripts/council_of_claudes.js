@@ -1,26 +1,31 @@
 // Council of Claudes — fan out a PR's diff to persona-based review agents on
 // the kagent cluster (agents.tigera.ai) and post each persona's feedback back
-// to the PR as a distinct review. Invoked from council_of_claudes.yml via
-// actions/github-script.
+// to the PR. Invoked from council_of_claudes.yml via actions/github-script.
+//
+// Each persona posts a HYBRID review:
+//   - a sticky summary review (verdict + non-line findings), updated in place;
+//   - inline review comments anchored to specific diff lines.
 //
 // Each persona is gated on its own *_AGENT_URL / *_AGENT_TOKEN env vars
-// (sourced from repo secrets). Any persona whose vars are unset is skipped
-// with a warning, so the workflow is usable with only one persona configured.
+// (sourced from repo secrets). Any persona whose vars are unset is skipped.
 //
 // Agent call contract (verified against tigera/agents-menagerie + live tests):
-//   POST <url> with Bearer <token>, JSON-RPC 2.0.
-//   The public endpoint enforces a ~30s cap on a synchronous response, but a
-//   full review generation takes longer, so we submit ASYNCHRONOUSLY:
-//     1. message/send with params.configuration.blocking=false
-//        -> returns immediately with result.id (a task id), state "submitted".
-//     2. poll tasks/get { id } every few seconds until status.state is
-//        terminal; on "completed", the review is result.artifacts[0].parts[0].text.
-//   Each individual call is fast, so none hits the 30s cap.
+//   POST <url> with Bearer <token>, JSON-RPC 2.0. The public endpoint caps a
+//   synchronous response at ~30s, so we submit ASYNCHRONOUSLY:
+//     1. message/send with params.configuration.blocking=false -> task id.
+//     2. poll tasks/get until terminal; on "completed" read
+//        result.artifacts[0].parts[0].text.
+//
+// Persona output contract (markdown; see scripts/personas/*.md):
+//   <summary markdown>
+//   <!-- coc-finding file="path" line="N" -->
+//   <finding markdown>
+//   ...one marker per line-specific finding. Text before the first marker is
+//   the summary. The diff sent to personas is annotated with [L<n>] new-side
+//   line numbers so cited lines can be anchored.
 
 // Each persona has a distinct in-comment identity: an emoji + a GitHub alert
-// type (NOTE/TIP/CAUTION render as blue/green/red callouts) + a tagline, so the
-// three are visually distinguishable at a glance even though they all post as
-// github-actions[bot].
+// type (NOTE/TIP/CAUTION render as blue/green/red callouts) + a tagline.
 const PERSONAS = [
   { key: 'correctness',     title: 'Correctness',             emoji: '🔎', accent: 'NOTE',    tagline: 'bugs · completeness · concurrency · edge cases', urlEnv: 'CORRECTNESS_AGENT_URL',     tokenEnv: 'CORRECTNESS_AGENT_TOKEN' },
   { key: 'maintainability', title: 'Maintainability & Tests', emoji: '🧪', accent: 'TIP',     tagline: 'simplicity · tests · docs · idioms',            urlEnv: 'MAINTAINABILITY_AGENT_URL', tokenEnv: 'MAINTAINABILITY_AGENT_TOKEN' },
@@ -39,8 +44,7 @@ const RPC_TIMEOUT_MS = 30_000;      // each individual call is quick
 const sleep = ms => new Promise(res => setTimeout(res, ms));
 
 // Sanitize agent-controlled text before logging so it cannot inject
-// ::workflow-command:: strings into the Actions log (matches the guard in
-// cherry_pick_candidate.js).
+// ::workflow-command:: strings into the Actions log.
 const safe = s => String(s ?? '').replace(/::/g, ':​:');
 
 // Strip a single markdown fence that wraps the *entire* response, while
@@ -51,9 +55,61 @@ function stripOuterFence(text) {
   return (m ? m[1] : t).trim();
 }
 
+// Annotate a unified diff with explicit new-file (RIGHT side) line numbers so
+// the model can cite exact lines, and build the set of anchorable lines per
+// file. Added ('+') and context (' ') lines get a [L<n>] prefix and are
+// anchorable on the RIGHT side; deleted ('-') lines are left unmarked.
+function annotateDiff(diff) {
+  const anchors = new Map(); // path -> Set<number>
+  const out = [];
+  let path = null;
+  let newLine = 0;
+  const addAnchor = n => {
+    if (!path) return;
+    if (!anchors.has(path)) anchors.set(path, new Set());
+    anchors.get(path).add(n);
+  };
+  for (const line of (diff || '').split('\n')) {
+    const plus = line.match(/^\+\+\+ b\/(.*)$/);
+    if (plus) { path = plus[1]; out.push(line); continue; }
+    if (line.startsWith('+++ ')) { path = null; out.push(line); continue; } // e.g. /dev/null
+    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) { newLine = parseInt(hunk[1], 10); out.push(line); continue; }
+    if (line.startsWith('diff --git') || line.startsWith('--- ') || line.startsWith('index ') ||
+        line.startsWith('new file') || line.startsWith('deleted file') || line.startsWith('rename ') ||
+        line.startsWith('similarity ') || line.startsWith('\\ ')) {
+      out.push(line); continue;
+    }
+    if (line.startsWith('+')) { addAnchor(newLine); out.push(`[L${newLine}] ${line}`); newLine++; }
+    else if (line.startsWith('-')) { out.push(`[----] ${line}`); }
+    else if (line.startsWith(' ')) { addAnchor(newLine); out.push(`[L${newLine}] ${line}`); newLine++; } // context line
+    else { out.push(line); } // trailing empty split element or unhandled metadata — never anchor/advance
+  }
+  return { annotated: out.join('\n'), anchors };
+}
+
+// Parse a persona's markdown into a summary plus line-anchored findings. Text
+// before the first <!-- coc-finding ... --> marker is the summary; each marker
+// plus the markdown after it (until the next marker) is one finding.
+function parseFindings(text) {
+  const re = /<!--\s*coc-finding\s+file="([^"]*)"\s+line="(\d+)"\s*-->/g;
+  const matches = [];
+  let m;
+  while ((m = re.exec(text || '')) !== null) {
+    matches.push({ start: m.index, end: re.lastIndex, file: m[1], line: parseInt(m[2], 10) });
+  }
+  if (matches.length === 0) return { summary: (text || '').trim(), findings: [] };
+  const summary = text.slice(0, matches[0].start).trim();
+  const findings = matches.map((mm, i) => ({
+    file: mm.file,
+    line: mm.line,
+    body: text.slice(mm.end, i + 1 < matches.length ? matches[i + 1].start : text.length).trim(),
+  }));
+  return { summary, findings };
+}
+
 // One JSON-RPC POST. Throws on non-2xx, network error, or a JSON-RPC error
-// payload (a 200 response carrying an `error` field — otherwise it would be
-// silently mistaken for a missing result).
+// payload (a 200 response carrying an `error` field).
 async function rpc(url, token, body) {
   const r = await fetch(url, {
     method: 'POST',
@@ -69,8 +125,7 @@ async function rpc(url, token, body) {
   return json;
 }
 
-// Pull the agent's text out of a completed task: prefer the first artifact's
-// text part, fall back to the final status message.
+// Pull the agent's text out of a completed task.
 function extractText(task) {
   const fromArtifacts = task?.artifacts?.[0]?.parts?.find(p => p.text)?.text;
   if (fromArtifacts) return fromArtifacts;
@@ -80,7 +135,6 @@ function extractText(task) {
 // Submit the review asynchronously and poll to completion. Returns the
 // persona's markdown review, or null on failure.
 async function reviewWithAgent({ core, title, url, token, messageText, msgId }) {
-  // 1. Submit non-blocking (up to 3 attempts with 5s/10s backoff).
   let taskId = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -101,8 +155,6 @@ async function reviewWithAgent({ core, title, url, token, messageText, msgId }) 
   }
   if (!taskId) return null;
 
-  // 2. Poll tasks/get until the task reaches a terminal state. Transient poll
-  //    errors are tolerated (keep polling until the overall deadline).
   const start = Date.now();
   while (Date.now() - start < MAX_POLL_MS) {
     await sleep(POLL_INTERVAL_MS);
@@ -120,7 +172,6 @@ async function reviewWithAgent({ core, title, url, token, messageText, msgId }) 
       core.warning(`${title}: task ${state}`);
       return null;
     }
-    // "submitted" / "working" -> keep polling
   }
   core.warning(`${title}: task did not complete within ${MAX_POLL_MS / 1000}s`);
   return null;
@@ -134,6 +185,7 @@ module.exports = async ({ github, context, core }) => {
     return;
   }
   const pull_number = pr.number;
+  const commit_id = pr.head.sha;
 
   // 1. Determine which personas are actually configured.
   const active = PERSONAS
@@ -148,26 +200,28 @@ module.exports = async ({ github, context, core }) => {
     return;
   }
 
-  // 2. Fetch the unified diff inline (size-guarded).
+  // 2. Fetch the unified diff inline (size-guarded), then annotate with line
+  //    numbers and build the anchorable-line index.
   const diffResp = await github.rest.pulls.get({
     owner, repo, pull_number, mediaType: { format: 'diff' },
   });
   let diff = diffResp.data;
   let truncated = false;
   if (Buffer.byteLength(diff, 'utf8') > MAX_DIFF_BYTES) {
-    // Slice on a byte boundary; TextDecoder with stream:true drops a trailing
-    // partial multi-byte sequence rather than emitting a replacement char.
     const buf = Buffer.from(diff, 'utf8').subarray(0, MAX_DIFF_BYTES);
     diff = new TextDecoder('utf-8').decode(buf, { stream: true });
     truncated = true;
     core.warning(`diff exceeds ${MAX_DIFF_BYTES} bytes, truncated (large-PR handling out of scope)`);
   }
+  const { annotated, anchors } = annotateDiff(diff);
 
   const messageText =
     `PR #${pull_number}: ${pr.title}\n\n` +
     `Description:\n${pr.body || '(none)'}\n\n` +
     (truncated ? '(NOTE: the diff below was truncated for size.)\n\n' : '') +
-    `Unified diff:\n${diff}`;
+    `The unified diff below is annotated: each new-side line is prefixed with its line number ` +
+    `as [L<n>]. When a finding is tied to a specific line, cite that number in a coc-finding anchor.\n\n` +
+    `Annotated unified diff:\n${annotated}`;
 
   // 3. Fan out to all configured personas in parallel; isolate failures.
   core.info(`Reviewing PR #${pull_number} with ${active.length} persona(s): ${active.map(p => p.title).join(', ')}`);
@@ -182,39 +236,82 @@ module.exports = async ({ github, context, core }) => {
     return { persona: p, review };
   }));
 
-  // 4. Post one *sticky* PR review per persona. Each body carries a hidden
-  //    per-persona marker; if a prior review with that marker exists we update
-  //    it in place (so re-runs replace rather than accumulate), otherwise we
-  //    create a new one. We replace (not merge): each run reflects the current
-  //    diff. Staying in the reviews API also keeps the door open for inline
-  //    line-anchored comments later (a comments[] array on the review).
-  const existing = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number });
-  let posted = 0;
+  // 4. Fetch existing reviews (for sticky summaries) and existing review
+  //    comments (for inline cleanup) once. A comment "has replies" if some
+  //    other comment is in_reply_to it — we never delete those.
+  const existingReviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number });
+  const existingComments = await github.paginate(github.rest.pulls.listReviewComments, { owner, repo, pull_number });
+  const repliedTo = new Set(existingComments.map(c => c.in_reply_to_id).filter(id => id != null));
+
+  let summaries = 0;
+  let inlineTotal = 0;
   for (const res of results) {
     if (!res) continue;
     const p = res.persona;
+    const inlineMarker = `<!-- council-of-claudes:inline:${p.key} -->`;
+    const { summary, findings } = parseFindings(res.review);
+
+    // Split findings into anchorable vs. unanchorable (folded into summary).
+    const folded = [];
+    const anchorable = [];
+    for (const f of findings) {
+      if (anchors.get(f.file)?.has(f.line)) anchorable.push(f);
+      else folded.push(f);
+    }
+
+    // 4a. Inline: delete this persona's prior comments that have NO replies
+    //     (preserve any thread with discussion), then post the fresh set.
+    const priorInline = existingComments.filter(c => (c.body || '').includes(inlineMarker));
+    for (const c of priorInline) {
+      if (repliedTo.has(c.id)) continue; // keep — has a discussion thread
+      try {
+        await github.rest.pulls.deleteReviewComment({ owner, repo, comment_id: c.id });
+      } catch (e) {
+        core.info(`  ${p.title}: could not delete inline #${c.id} (${safe(e.message)})`);
+      }
+    }
+    let inline = 0;
+    for (const f of anchorable) {
+      const body = `${p.emoji} **${p.title}** — ${f.body}\n\n${inlineMarker}`;
+      try {
+        await github.rest.pulls.createReviewComment({
+          owner, repo, pull_number, commit_id, path: f.file, line: f.line, side: 'RIGHT', body,
+        });
+        inline++;
+      } catch (e) {
+        // Line wasn't commentable after all — fold it into the summary so it isn't lost.
+        core.info(`  ${p.title}: inline anchor failed at ${safe(f.file)}:${f.line} (${safe(e.message)}), folding into summary`);
+        folded.push(f);
+      }
+    }
+    inlineTotal += inline;
+
+    // 4b. Summary: sticky review, updated in place. Folded findings (no valid
+    //     line anchor) are listed here so nothing is lost.
     const marker = `<!-- council-of-claudes:${p.key} -->`;
-    const body =
+    let body =
       `### ${p.emoji} Council of Claudes — ${p.title}\n\n` +
       `> [!${p.accent}]\n> **${p.title} lens** · ${p.tagline}\n\n` +
-      `${res.review}\n\n` +
-      `<sub>🤖 Council of Claudes</sub>\n${marker}`;
-    // Most recent prior review carrying this persona's marker, if any.
-    const prior = existing.filter(r => (r.body || '').includes(marker)).pop();
+      `${summary || '_No summary provided._'}\n`;
+    if (folded.length) {
+      body += `\n**Other notes** (not anchored to a diff line):\n` +
+        folded.map(f => `- \`${f.file}:${f.line}\` — ${f.body.replace(/\s*\n+\s*/g, ' ')}`).join('\n') + '\n';
+    }
+    body += `\n<sub>🤖 Council of Claudes · ${inline} inline comment(s)</sub>\n${marker}`;
+
+    const prior = existingReviews.filter(r => (r.body || '').includes(marker)).pop();
     try {
       if (prior) {
         await github.rest.pulls.updateReview({ owner, repo, pull_number, review_id: prior.id, body });
-        core.info(`${res.persona.title}: review updated in place (#${prior.id})`);
+        core.info(`${p.title}: summary updated in place (#${prior.id}), ${inline} inline`);
       } else {
-        await github.rest.pulls.createReview({
-          owner, repo, pull_number, commit_id: pr.head.sha, event: 'COMMENT', body,
-        });
-        core.info(`${res.persona.title}: review posted (new)`);
+        await github.rest.pulls.createReview({ owner, repo, pull_number, commit_id, event: 'COMMENT', body });
+        core.info(`${p.title}: summary posted (new), ${inline} inline`);
       }
-      posted++;
+      summaries++;
     } catch (e) {
-      core.warning(`${res.persona.title}: failed to post/update review (${safe(e.message)})`);
+      core.warning(`${p.title}: failed to post/update summary (${safe(e.message)})`);
     }
   }
-  core.info(`Done: ${posted}/${active.length} persona review(s) posted to PR #${pull_number}`);
+  core.info(`Done: ${summaries}/${active.length} summaries, ${inlineTotal} inline comment(s) on PR #${pull_number}`);
 };
