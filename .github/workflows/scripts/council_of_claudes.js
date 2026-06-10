@@ -17,10 +17,14 @@
 //        terminal; on "completed", the review is result.artifacts[0].parts[0].text.
 //   Each individual call is fast, so none hits the 30s cap.
 
+// Each persona has a distinct in-comment identity: an emoji + a GitHub alert
+// type (NOTE/TIP/CAUTION render as blue/green/red callouts) + a tagline, so the
+// three are visually distinguishable at a glance even though they all post as
+// github-actions[bot].
 const PERSONAS = [
-  { key: 'correctness',     title: 'Correctness',             urlEnv: 'CORRECTNESS_AGENT_URL',     tokenEnv: 'CORRECTNESS_AGENT_TOKEN' },
-  { key: 'maintainability', title: 'Maintainability & Tests', urlEnv: 'MAINTAINABILITY_AGENT_URL', tokenEnv: 'MAINTAINABILITY_AGENT_TOKEN' },
-  { key: 'security',        title: 'Security',                urlEnv: 'SECURITY_AGENT_URL',        tokenEnv: 'SECURITY_AGENT_TOKEN' },
+  { key: 'correctness',     title: 'Correctness',             emoji: '🔎', accent: 'NOTE',    tagline: 'bugs · completeness · concurrency · edge cases', urlEnv: 'CORRECTNESS_AGENT_URL',     tokenEnv: 'CORRECTNESS_AGENT_TOKEN' },
+  { key: 'maintainability', title: 'Maintainability & Tests', emoji: '🧪', accent: 'TIP',     tagline: 'simplicity · tests · docs · idioms',            urlEnv: 'MAINTAINABILITY_AGENT_URL', tokenEnv: 'MAINTAINABILITY_AGENT_TOKEN' },
+  { key: 'security',        title: 'Security',                emoji: '🛡️', accent: 'CAUTION', tagline: 'validation · secrets · authz · isolation',      urlEnv: 'SECURITY_AGENT_URL',        tokenEnv: 'SECURITY_AGENT_TOKEN' },
 ];
 
 // Cap the diff we send to keep within model context. Large-PR handling is out
@@ -188,8 +192,13 @@ module.exports = async ({ github, context, core }) => {
   let posted = 0;
   for (const res of results) {
     if (!res) continue;
-    const marker = `<!-- council-of-claudes:${res.persona.key} -->`;
-    const body = `### 🤖 Council of Claudes — ${res.persona.title}\n\n${res.review}\n\n${marker}`;
+    const p = res.persona;
+    const marker = `<!-- council-of-claudes:${p.key} -->`;
+    const body =
+      `### ${p.emoji} Council of Claudes — ${p.title}\n\n` +
+      `> [!${p.accent}]\n> **${p.title} lens** · ${p.tagline}\n\n` +
+      `${res.review}\n\n` +
+      `<sub>🤖 Council of Claudes</sub>\n${marker}`;
     // Most recent prior review carrying this persona's marker, if any.
     const prior = existing.filter(r => (r.body || '').includes(marker)).pop();
     try {
