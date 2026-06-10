@@ -200,7 +200,7 @@ var _ = describe.CalicoDescribe(
 
 		var (
 			cli         ctrlclient.Client
-			dp          utils.ClusterDataplane
+			dp          clusterDataplane
 			encapIface  string
 			nodeNames   []string
 			nodeIPs     []string
@@ -228,7 +228,7 @@ var _ = describe.CalicoDescribe(
 			calicoNames = nodesInfo.GetCalicoNames()[:2]
 			logrus.Infof("HEP nodes: %v IPs: %v calico: %v", nodeNames, nodeIPs, calicoNames)
 
-			dp = utils.DetectDataplane(cli, f.ClientSet)
+			dp = detectDataplane(cli, f.ClientSet)
 			encapIface = detectEncapInterface(cli)
 			logrus.Infof("Encap interface: %q", encapIface)
 		})
@@ -254,7 +254,7 @@ var _ = describe.CalicoDescribe(
 				// before routing, so traffic arrives on the host interface directly
 				// rather than via the tunnel device.
 				if s.accessType == "nodePort" && s.srcPod == 2 && s.policyDirection == "ingress" &&
-					(dp.Calico == utils.DataplaneIptables || dp.Calico == utils.DataplaneNftables) {
+					(dp.Calico == dataplaneIptables || dp.Calico == dataplaneNftables) {
 					return ""
 				}
 				if encapIface != "" {
