@@ -94,12 +94,6 @@ type ControllerConfig struct {
 	// WaitingPollInterval controls how frequently the controller re-checks
 	// conflicts during WaitingForConflictResolution. Defaults to 10s.
 	WaitingPollInterval time.Duration
-
-	// RestartFunc is invoked once the migration reaches Complete in manifest
-	// mode so kube-controllers can re-exec and pick up the v3 API group.
-	// Defaults to os.Exit(0); tests override this with a no-op so the test
-	// binary isn't killed mid-run.
-	RestartFunc func()
 }
 
 // NewController creates a new migration controller. It watches for DatastoreMigration CRs
@@ -110,10 +104,6 @@ func NewController(cfg ControllerConfig) controller.Controller {
 	if pollInterval == 0 {
 		pollInterval = defaultWaitingPollInterval
 	}
-	restartFunc := cfg.RestartFunc
-	if restartFunc == nil {
-		restartFunc = func() { os.Exit(0) }
-	}
 	m := &migrationController{
 		ctx:                 cfg.Ctx,
 		k8sClient:           cfg.K8sClient,
@@ -123,7 +113,6 @@ func NewController(cfg ControllerConfig) controller.Controller {
 		apiregClient:        cfg.APIRegClient,
 		migrators:           cfg.Migrators,
 		waitingPollInterval: pollInterval,
-		restartFunc:         restartFunc,
 	}
 	return controller.NewDeferredCRDController(
 		"datastoremigrations.migration.projectcalico.org",
@@ -158,7 +147,6 @@ type migrationController struct {
 	apiregClient        apiregv1client.ApiregistrationV1Interface
 	migrators           []migrators.ResourceMigrator
 	waitingPollInterval time.Duration
-	restartFunc         func()
 	queue               workqueue.TypedRateLimitingInterface[string]
 
 	// operatorManaged is true if the cluster is managed by the Tigera operator,
@@ -244,7 +232,7 @@ func (m *migrationController) RunWithContext(ctx context.Context) {
 }
 
 func (m *migrationController) enqueue(obj any) {
-	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+	key, err := cache.MetaNamespaceKeyFunc(obj)
 	if err != nil {
 		logrus.WithError(err).Error("Failed to get key for object")
 		return
@@ -693,7 +681,7 @@ func (m *migrationController) handleConverged(logCtx *logrus.Entry, dm *Datastor
 	// cleanup first.
 	if !m.operatorManaged && dm.DeletionTimestamp == nil {
 		logCtx.Info("Migration complete, restarting kube-controllers to pick up v3 API group")
-		m.restartFunc()
+		os.Exit(0)
 	}
 	return nil
 }

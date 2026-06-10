@@ -140,7 +140,6 @@ func startController(
 		CRDClient:           fvCRDClient,
 		Migrators:           NewMigrators(bc, fvRTClient),
 		WaitingPollInterval: 500 * time.Millisecond,
-		RestartFunc:         func() {},
 	})
 
 	stop := make(chan struct{})

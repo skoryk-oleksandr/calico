@@ -158,7 +158,6 @@ func TestLifecycle_Mainline(t *testing.T) {
 		APIRegClient:  fakeAPIReg.ApiregistrationV1(),
 		CRDClient:     fvCRDClient,
 		Migrators:     NewMigrators(bc, fvRTClient),
-		RestartFunc:   func() {},
 	})
 	go ctrl.Run(stop)
 
