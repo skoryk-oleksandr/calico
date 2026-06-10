@@ -1,0 +1,52 @@
+# Council of Claudes — single-stage PR code review.
+#
+# On a pull request, fans out the PR's diff to persona-based review agents
+# hosted on the kagent cluster (agents.tigera.ai) and posts each persona's
+# feedback back to the PR as a distinct review.
+#
+# Single-stage (unlike the two-stage fork-safe model in cherry_pick_candidate.yml):
+# our demo PRs are same-repo branches, which receive secrets + a write-scoped
+# GITHUB_TOKEN directly. All logic lives in
+# .github/workflows/scripts/council_of_claudes.js.
+#
+# Each persona is gated on its own *_AGENT_URL / *_AGENT_TOKEN repo secrets;
+# personas whose secrets are unset are skipped, so the workflow is usable with
+# only one persona configured (e.g. Correctness first).
+
+name: Council of Claudes
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+concurrency:
+  # Coalesce rapid pushes to the same PR branch; cancel superseded runs.
+  group: council-of-claudes-${{ github.event.pull_request.head.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      CORRECTNESS_AGENT_URL: ${{ secrets.CORRECTNESS_AGENT_URL }}
+      CORRECTNESS_AGENT_TOKEN: ${{ secrets.CORRECTNESS_AGENT_TOKEN }}
+      MAINTAINABILITY_AGENT_URL: ${{ secrets.MAINTAINABILITY_AGENT_URL }}
+      MAINTAINABILITY_AGENT_TOKEN: ${{ secrets.MAINTAINABILITY_AGENT_TOKEN }}
+      SECURITY_AGENT_URL: ${{ secrets.SECURITY_AGENT_URL }}
+      SECURITY_AGENT_TOKEN: ${{ secrets.SECURITY_AGENT_TOKEN }}
+    steps:
+      # pull_request checks out the merge ref by default, so the script comes
+      # from the PR's own tree — letting us iterate on the workflow via its PR.
+      - name: Checkout workflow scripts
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Review pull request
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const fn = require(`${process.env.GITHUB_WORKSPACE}/.github/workflows/scripts/council_of_claudes.js`);
+            await fn({ github, context, core });
