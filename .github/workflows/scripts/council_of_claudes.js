@@ -36,6 +36,46 @@ const PERSONAS = [
 // of scope for the hackathon; oversized diffs are truncated with a note.
 const MAX_DIFF_BYTES = 100 * 1024;
 
+// Calico's own context files (conventions / architecture) used to ground the
+// review, read from the checked-out workspace. `always` files are injected on
+// every PR; the rest only when a changed path matches one of `whenPathStartsWith`.
+const CONTEXT_FILES = [
+  { file: '.claude/CLAUDE.md',                                always: true },
+  { file: '.github/copilot-instructions.md',                  always: true },
+  { file: 'felix/CLAUDE.md',                                  whenPathStartsWith: ['felix/'] },
+  { file: 'goldmane/CLAUDE.md',                               whenPathStartsWith: ['goldmane/'] },
+  { file: '.github/instructions/bpf.instructions.md',         whenPathStartsWith: ['felix/bpf'] },
+  { file: '.github/instructions/goldmane.instructions.md',    whenPathStartsWith: ['goldmane/'] },
+  { file: '.github/instructions/helm-charts.instructions.md', whenPathStartsWith: ['charts/'] },
+];
+const MAX_CONTEXT_BYTES = 80 * 1024; // backstop so injected context can't blow up the message
+
+// Read the relevant Calico context files from the workspace and format them as
+// an authoritative preamble, scoped to the paths this PR touches.
+function gatherContext(core, touchedPaths) {
+  const fs = require('fs');
+  const path = require('path');
+  const ws = process.env.GITHUB_WORKSPACE || '.';
+  const paths = [...touchedPaths];
+  const chosen = CONTEXT_FILES.filter(c =>
+    c.always || (c.whenPathStartsWith || []).some(pre => paths.some(tp => tp.startsWith(pre))));
+  let total = 0;
+  const blocks = [];
+  const included = [];
+  for (const c of chosen) {
+    let content;
+    try { content = fs.readFileSync(path.join(ws, c.file), 'utf8').trim(); }
+    catch (e) { core.info(`  context: ${c.file} unavailable (${e.message}), skipping`); continue; }
+    if (total + content.length > MAX_CONTEXT_BYTES) { core.info(`  context: budget reached, skipping ${c.file}`); continue; }
+    total += content.length;
+    blocks.push(`### ${c.file}\n\n${content}`);
+    included.push(c.file);
+  }
+  if (!blocks.length) return '';
+  core.info(`Injected ${blocks.length} Calico context file(s) (${total} bytes): ${included.join(', ')}`);
+  return `## Project context — authoritative Calico conventions; apply these in your review\n\n${blocks.join('\n\n---\n\n')}\n\n---\n\n`;
+}
+
 // Async task polling parameters.
 const POLL_INTERVAL_MS = 5_000;
 const MAX_POLL_MS = 10 * 60 * 1000; // give a slow generation up to 10 minutes
@@ -215,7 +255,16 @@ module.exports = async ({ github, context, core }) => {
   }
   const { annotated, anchors } = annotateDiff(diff);
 
-  const messageText =
+  // Ground the review in Calico's own context files, scoped to the paths this PR
+  // touches. Parse both new (+++ b/) and old (--- a/) file headers so delete-only
+  // changes still match path-scoped context; /dev/null headers lack the a//b/
+  // prefix and are naturally excluded.
+  const touchedPaths = new Set(
+    (diff.match(/^(?:\+\+\+ b|--- a)\/.+$/gm) || []).map(l => l.replace(/^(?:\+\+\+ b|--- a)\//, '')),
+  );
+  const projectContext = gatherContext(core, touchedPaths);
+
+  const messageText = projectContext +
     `PR #${pull_number}: ${pr.title}\n\n` +
     `Description:\n${pr.body || '(none)'}\n\n` +
     (truncated ? '(NOTE: the diff below was truncated for size.)\n\n' : '') +
