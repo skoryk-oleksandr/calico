@@ -37,6 +37,12 @@ jobs:
       MAINTAINABILITY_AGENT_TOKEN: ${{ secrets.MAINTAINABILITY_AGENT_TOKEN }}
       SECURITY_AGENT_URL: ${{ secrets.SECURITY_AGENT_URL }}
       SECURITY_AGENT_TOKEN: ${{ secrets.SECURITY_AGENT_TOKEN }}
+      # NOTE: every persona in the PERSONAS array (scripts/council_of_claudes.js) must have its
+      # *_AGENT_URL/_TOKEN mapped here too — repo secrets are NOT auto-exposed to the script.
+      NELLJERRAM_AGENT_URL: ${{ secrets.NELLJERRAM_AGENT_URL }}
+      NELLJERRAM_AGENT_TOKEN: ${{ secrets.NELLJERRAM_AGENT_TOKEN }}
+      CASEYDAVENPORT_AGENT_URL: ${{ secrets.CASEYDAVENPORT_AGENT_URL }}
+      CASEYDAVENPORT_AGENT_TOKEN: ${{ secrets.CASEYDAVENPORT_AGENT_TOKEN }}
     steps:
       # pull_request checks out the merge ref by default, so the script comes
       # from the PR's own tree — letting us iterate on the workflow via its PR.

@@ -30,6 +30,10 @@ const PERSONAS = [
   { key: 'correctness',     title: 'Correctness',             emoji: '🔎', accent: 'NOTE',    tagline: 'bugs · completeness · concurrency · edge cases', urlEnv: 'CORRECTNESS_AGENT_URL',     tokenEnv: 'CORRECTNESS_AGENT_TOKEN' },
   { key: 'maintainability', title: 'Maintainability & Tests', emoji: '🧪', accent: 'TIP',     tagline: 'simplicity · tests · docs · idioms',            urlEnv: 'MAINTAINABILITY_AGENT_URL', tokenEnv: 'MAINTAINABILITY_AGENT_TOKEN' },
   { key: 'security',        title: 'Security',                emoji: '🛡️', accent: 'CAUTION', tagline: 'validation · secrets · authz · isolation',      urlEnv: 'SECURITY_AGENT_URL',        tokenEnv: 'SECURITY_AGENT_TOKEN' },
+  // A "simulated human reviewer" persona distilled from a real reviewer's comment history.
+  // Uses a custom avatar image (rendered from the public repo) instead of an emoji.
+  { key: 'nelljerram',      title: 'Nell',                    emoji: '🧑‍💻', accent: 'IMPORTANT', image: 'https://raw.githubusercontent.com/tigera/calico-oss-test/master/.github/assets/nell.png', tagline: 'simulated reviewer · simplicity · naming · error handling · keep useful comments', urlEnv: 'NELLJERRAM_AGENT_URL', tokenEnv: 'NELLJERRAM_AGENT_TOKEN' },
+  { key: 'caseydavenport',  title: 'Casey',                   emoji: '🧑‍🔧', accent: 'WARNING',   image: 'https://raw.githubusercontent.com/tigera/calico-oss-test/master/.github/assets/casey.png', tagline: 'simulated reviewer · testing discipline · API design · simplicity · robustness', urlEnv: 'CASEYDAVENPORT_AGENT_URL', tokenEnv: 'CASEYDAVENPORT_AGENT_TOKEN' },
 ];
 
 // Cap the diff we send to keep within model context. Large-PR handling is out
@@ -297,6 +301,8 @@ module.exports = async ({ github, context, core }) => {
   for (const res of results) {
     if (!res) continue;
     const p = res.persona;
+    // Persona badge: a custom avatar image if provided, else the emoji.
+    const badge = p.image ? `<img src="${p.image}" width="20" align="top" alt="${p.title}">` : p.emoji;
     const inlineMarker = `<!-- council-of-claudes:inline:${p.key} -->`;
     const { summary, findings } = parseFindings(res.review);
 
@@ -321,7 +327,7 @@ module.exports = async ({ github, context, core }) => {
     }
     let inline = 0;
     for (const f of anchorable) {
-      const body = `${p.emoji} **${p.title}** — ${f.body}\n\n${inlineMarker}`;
+      const body = `${badge} **${p.title}** — ${f.body}\n\n${inlineMarker}`;
       try {
         await github.rest.pulls.createReviewComment({
           owner, repo, pull_number, commit_id, path: f.file, line: f.line, side: 'RIGHT', body,
@@ -339,7 +345,7 @@ module.exports = async ({ github, context, core }) => {
     //     line anchor) are listed here so nothing is lost.
     const marker = `<!-- council-of-claudes:${p.key} -->`;
     let body =
-      `### ${p.emoji} Council of Claudes — ${p.title}\n\n` +
+      `### ${badge} Council of Claudes — ${p.title}\n\n` +
       `> [!${p.accent}]\n> **${p.title} lens** · ${p.tagline}\n\n` +
       `${summary || '_No summary provided._'}\n`;
     if (folded.length) {
