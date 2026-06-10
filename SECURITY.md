@@ -2,11 +2,11 @@
 
 ## Supported Versions
 
-The Tigera team generally support the most recent two minor versions
-of Project Calico on a rolling basis.  Support for older versions is on a 
-case-by-case basis.  For example, at the time of writing, 
-Calico v3.26.x and v3.25.x are supported.  When v3.27.0 is released,
-automatic support for v3.25.x is dropped.
+The Project Calico community supports the most recent three minor
+versions on a rolling basis. Older versions receive security-only
+patches at the maintainers' discretion. The current support window is
+documented in the release notes for each minor release on
+https://docs.tigera.io/calico/latest/release-notes/.
 
 ## Reporting a Vulnerability
 
@@ -20,6 +20,10 @@ request because those are immediately public. Instead:
 
 Please include as much information as possible, including the
 affected version(s) and steps to reproduce.
+
+## Bug Bounty
+
+Project Calico does not currently operate a bug bounty programme. Researchers who would like to be acknowledged for valid reports can request a public mention in the release notes for the version that ships the fix.
 
 ## Third Party Vulnerabilities
 

@@ -1,8 +1,6 @@
-# Contributing to the Calico Codebase
+# Contributing to Project Calico
 
-Thanks for considering contributing to Calico! This document outlines the canonical procedure for contributing new features
-and bugfixes to Calico. Following these steps will help ensure that your contribution gets merged quickly and
-efficiently.
+Welcome! Project Calico is a community-driven open source networking project under the CNCF, with a wide contributor base across many organisations. This guide explains how to contribute code, file issues, and propose features. Please read it through carefully before submitting your first pull request -- a small amount of upfront alignment makes review much faster for everyone.
 
 ## Overview
 
@@ -93,3 +91,8 @@ on GitHub.
 
 [fork]: https://help.github.com/articles/fork-a-repo/
 [pulls]: https://help.github.com/articles/creating-a-pull-request/
+
+## Code of Conduct
+
+This project adheres to the [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code-of-conduct.md).
+By participating, you are expected to uphold this code. Please report unacceptable behaviour to the project maintainers via the channels listed in the CNCF policy.
