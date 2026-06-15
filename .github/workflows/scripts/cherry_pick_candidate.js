@@ -23,6 +23,15 @@ module.exports = async ({ github, context, core }) => {
     core.warning('BACKPORT_CLASSIFIER_AGENT_URL or BACKPORT_CLASSIFIER_AGENT_TOKEN secret missing (read by this script as AGENT_URL/AGENT_TOKEN env vars), skipping');
     return;
   }
+  // Register the token for log masking so it cannot leak via any
+  // downstream log line, including diagnostics added later.
+  core.setSecret(agentToken);
+  // Refuse to send the bearer token over plaintext if a misconfigured
+  // secret points at a non-https URL.
+  if (!/^https:\/\//i.test(agentUrl)) {
+    core.warning('AGENT_URL is not https://, refusing to send bearer token over plaintext, skipping');
+    return;
+  }
 
   const headSha = context.payload.workflow_run?.head_sha;
   if (!headSha) {
@@ -90,6 +99,9 @@ module.exports = async ({ github, context, core }) => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
+        // Fail closed on any redirect so the bearer token cannot be
+        // sent to a different host than the configured AGENT_URL.
+        redirect: 'error',
         signal: AbortSignal.timeout(60_000),
       });
       if (r.ok) {
